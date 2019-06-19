@@ -6,6 +6,7 @@ use HTTP::Request;
 use LWP::UserAgent;
 use Hydra::Helper::CatalystUtils;
 use JSON;
+use Data::Dump qw(dump);
 
 sub isEnabled {
     my ($self) = @_;
@@ -87,7 +88,12 @@ sub buildFinished {
 
         if (scalar keys %{$authors} > 0) {
             # FIXME: escaping
-            my @x = map { "<mailto:$authors->{$_}|$_>" } (sort keys %{$authors});
+            my @x = map {
+                if ($build->buildstatus > 0 && exists $self->{config}->{slackusers}{$authors->{$_}}) {
+                  "<\@$self->{config}->{slackusers}{$authors->{$_}}>"
+                } else {
+                  "<mailto:$authors->{$_}|$_>"
+                } } (sort keys %{$authors});
             $text .= ", likely due to ";
             $text .= "$nrCommits commits by " if $nrCommits > 1;
             $text .= join(" or ", scalar @x > 1 ? join(", ", @x[0..scalar @x - 2]) : (), $x[-1]);
