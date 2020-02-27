@@ -12,7 +12,7 @@ struct Connection : pqxx::connection
     std::string getFlags()
     {
         using namespace nix;
-        auto s = getEnv("HYDRA_DBI", "dbi:Pg:dbname=hydra;");
+        auto s = getEnv("HYDRA_DBI").value_or("dbi:Pg:dbname=hydra;");
         std::string prefix = "dbi:Pg:";
         if (std::string(s, 0, prefix.size()) != prefix)
             throw Error("$HYDRA_DBI does not denote a PostgreSQL database");
@@ -23,7 +23,7 @@ struct Connection : pqxx::connection
 
 class receiver : public pqxx::notification_receiver
 {
-    std::experimental::optional<std::string> status;
+    std::optional<std::string> status;
 
 public:
 
@@ -35,9 +35,9 @@ public:
         status = payload;
     };
 
-    std::experimental::optional<std::string> get() {
+    std::optional<std::string> get() {
         auto s = status;
-        status = std::experimental::nullopt;
+        status = std::nullopt;
         return s;
     }
 };

@@ -6,7 +6,7 @@ use warnings;
 use base 'Hydra::Base::Controller::ListBuilds';
 use Hydra::Helper::Nix;
 use Hydra::Helper::CatalystUtils;
-
+use Net::Prometheus;
 
 sub job : Chained('/') PathPart('job') CaptureArgs(3) {
     my ($self, $c, $projectName, $jobsetName, $jobName) = @_;
@@ -29,6 +29,39 @@ sub job : Chained('/') PathPart('job') CaptureArgs(3) {
     $c->stash->{project} = $c->stash->{job}->project;
 }
 
+sub prometheus : Chained('job') PathPart('prometheus') Args(0) {
+    my ($self, $c) = @_;
+    my $job = $c->stash->{job};
+    my $prometheus = Net::Prometheus->new;
+
+    my $lastBuild = $job->builds->find(
+        { finished => 1 },
+        { order_by => 'id DESC', rows => 1, columns => [@buildListColumns] }
+    );
+
+    $prometheus->new_counter(
+        name => "hydra_job_completion_time",
+        help => "The most recent job's completion time",
+        labels => [ "project", "jobset", "job" ]
+    )->labels(
+        $c->stash->{project}->name,
+        $c->stash->{jobset}->name,
+        $c->stash->{job}->name,
+    )->inc($lastBuild->stoptime);
+
+    $prometheus->new_gauge(
+        name => "hydra_job_failed",
+        help => "Record if the most recent version of this job failed (1 means failed)",
+        labels => [ "project", "jobset", "job" ]
+    )->labels(
+        $c->stash->{project}->name,
+        $c->stash->{jobset}->name,
+        $c->stash->{job}->name,
+    )->inc($lastBuild->buildstatus > 0);
+
+    $c->stash->{'plain'} = { data => $prometheus->render };
+    $c->forward('Hydra::View::Plain');
+}
 
 sub overview : Chained('job') PathPart('') Args(0) {
     my ($self, $c) = @_;
@@ -49,7 +82,7 @@ sub overview : Chained('job') PathPart('') Args(0) {
     # If this is an aggregate job, then get its constituents.
     my @constituents = $c->model('DB::Builds')->search(
         { aggregate => { -in => $job->builds->search({}, { columns => ["id"], order_by => "id desc", rows => 15 })->as_query } },
-        { join => 'aggregateconstituents_constituents', 
+        { join => 'aggregateconstituents_constituents',
           columns => ['id', 'job', 'finished', 'buildstatus'],
           +select => ['aggregateconstituents_constituents.aggregate'],
           +as => ['aggregate']
@@ -66,7 +99,7 @@ sub overview : Chained('job') PathPart('') Args(0) {
 
     foreach my $agg (keys %$aggregates) {
         # FIXME: could be done in one query.
-        $aggregates->{$agg}->{build} = 
+        $aggregates->{$agg}->{build} =
             $c->model('DB::Builds')->find({id => $agg}, {columns => [@buildListColumns]}) or die;
     }
 
@@ -139,7 +172,7 @@ sub get_builds : Chained('job') PathPart('') CaptureArgs(0) {
     my ($self, $c) = @_;
     $c->stash->{allBuilds} = $c->stash->{job}->builds;
     $c->stash->{latestSucceeded} = $c->model('DB')->resultset('LatestSucceededForJob')
-        ->search({}, {bind => [$c->stash->{project}->name, $c->stash->{jobset}->name, $c->stash->{job}->name]});
+        ->search({}, {bind => [$c->stash->{jobset}->name, $c->stash->{job}->name]});
     $c->stash->{channelBaseName} =
         $c->stash->{project}->name . "-" . $c->stash->{jobset}->name . "-" . $c->stash->{job}->name;
 }
