@@ -15,6 +15,13 @@ using namespace nix;
 
 typedef std::pair<std::string, std::string> JobsetName;
 
+enum class EvaluationStyle
+{
+    SCHEDULE = 1,
+    ONESHOT = 2,
+    ONE_AT_A_TIME = 3,
+};
+
 struct Evaluator
 {
     std::unique_ptr<Config> config;
@@ -24,6 +31,7 @@ struct Evaluator
     struct Jobset
     {
         JobsetName name;
+        std::optional<EvaluationStyle> evaluation_style;
         time_t lastCheckedTime, triggerTime;
         int checkInterval;
         Pid pid;
@@ -59,9 +67,10 @@ struct Evaluator
 
         pqxx::work txn(*conn);
 
-        auto res = txn.parameterized
-            ("select project, j.name, lastCheckedTime, triggerTime, checkInterval from Jobsets j join Projects p on j.project = p.name "
-             "where j.enabled != 0 and p.enabled != 0").exec();
+        auto res = txn.exec
+            ("select project, j.name, lastCheckedTime, triggerTime, checkInterval, j.enabled as jobset_enabled from Jobsets j join Projects p on j.project = p.name "
+             "where j.enabled != 0 and p.enabled != 0");
+
 
         auto state(state_.lock());
 
@@ -78,12 +87,23 @@ struct Evaluator
             jobset.lastCheckedTime = row["lastCheckedTime"].as<time_t>(0);
             jobset.triggerTime = row["triggerTime"].as<time_t>(notTriggered);
             jobset.checkInterval = row["checkInterval"].as<time_t>();
+            switch (row["jobset_enabled"].as<int>(0)) {
+                case 1:
+                    jobset.evaluation_style = EvaluationStyle::SCHEDULE;
+                    break;
+                case 2:
+                    jobset.evaluation_style = EvaluationStyle::ONESHOT;
+                    break;
+                case 3:
+                    jobset.evaluation_style = EvaluationStyle::ONE_AT_A_TIME;
+                    break;
+            }
 
             seen.insert(name);
         }
 
         if (evalOne && seen.empty()) {
-            printError("the specified jobset does not exist");
+            printError("the specified jobset does not exist or is disabled");
             std::_Exit(1);
         }
 
@@ -107,12 +127,11 @@ struct Evaluator
         {
             auto conn(dbPool.get());
             pqxx::work txn(*conn);
-            txn.parameterized
-                ("update Jobsets set startTime = $1 where project = $2 and name = $3")
-                (now)
-                (jobset.name.first)
-                (jobset.name.second)
-                .exec();
+            txn.exec_params0
+                ("update Jobsets set startTime = $1 where project = $2 and name = $3",
+                 now,
+                 jobset.name.first,
+                 jobset.name.second);
             txn.commit();
         }
 
@@ -129,19 +148,100 @@ struct Evaluator
         childStarted.notify_one();
     }
 
+    bool shouldEvaluate(Jobset & jobset)
+    {
+        if (jobset.pid != -1) {
+            // Already running.
+            debug("shouldEvaluate %s:%s? no: already running",
+                  jobset.name.first, jobset.name.second);
+            return false;
+        }
+
+        if (jobset.triggerTime != std::numeric_limits<time_t>::max()) {
+            // An evaluation of this Jobset is requested
+            debug("shouldEvaluate %s:%s? yes: requested",
+                  jobset.name.first, jobset.name.second);
+            return true;
+        }
+
+        if (jobset.checkInterval <= 0) {
+            // Automatic scheduling is disabled. We allow requested
+            // evaluations, but never schedule start one.
+            debug("shouldEvaluate %s:%s? no: checkInterval <= 0",
+                  jobset.name.first, jobset.name.second);
+            return false;
+        }
+
+        if (jobset.lastCheckedTime + jobset.checkInterval <= time(0)) {
+            // Time to schedule a fresh evaluation. If the jobset
+            // is a ONE_AT_A_TIME jobset, ensure the previous jobset
+            // has no remaining, unfinished work.
+
+            auto conn(dbPool.get());
+
+            pqxx::work txn(*conn);
+
+            if (jobset.evaluation_style == EvaluationStyle::ONE_AT_A_TIME) {
+                auto evaluation_res = txn.parameterized
+                    ("select id from JobsetEvals "
+                     "where project = $1 and jobset = $2 "
+                     "order by id desc limit 1")
+                  (jobset.name.first)
+                  (jobset.name.second)
+                  .exec();
+
+                if (evaluation_res.empty()) {
+                    // First evaluation, so allow scheduling.
+                    debug("shouldEvaluate(one-at-a-time) %s:%s? yes: no prior eval",
+                          jobset.name.first, jobset.name.second);
+                    return true;
+                }
+
+                auto evaluation_id = evaluation_res[0][0].as<int>();
+
+                auto unfinished_build_res = txn.parameterized
+                    ("select id from Builds "
+                     "join JobsetEvalMembers "
+                     "    on (JobsetEvalMembers.build = Builds.id) "
+                     "where JobsetEvalMembers.eval = $1 "
+                     "  and builds.finished = 0 "
+                     " limit 1")
+                  (evaluation_id)
+                  .exec();
+
+                // If the previous evaluation has no unfinished builds
+                // schedule!
+                if (unfinished_build_res.empty()) {
+                    debug("shouldEvaluate(one-at-a-time) %s:%s? yes: no unfinished builds",
+                          jobset.name.first, jobset.name.second);
+                    return true;
+                } else {
+                    debug("shouldEvaluate(one-at-a-time) %s:%s? no: at least one unfinished build",
+                           jobset.name.first, jobset.name.second);
+                    return false;
+                }
+
+
+            } else {
+                // EvaluationStyle::ONESHOT, EvaluationStyle::SCHEDULED
+                debug("shouldEvaluate(oneshot/scheduled) %s:%s? yes: checkInterval elapsed",
+                      jobset.name.first, jobset.name.second);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     void startEvals(State & state)
     {
         std::vector<Jobsets::iterator> sorted;
-
-        time_t now = time(0);
 
         /* Filter out jobsets that have been evaluated recently and have
            not been triggered. */
         for (auto i = state.jobsets.begin(); i != state.jobsets.end(); ++i)
             if (evalOne ||
-                (i->second.pid == -1 &&
-                 (i->second.triggerTime != std::numeric_limits<time_t>::max() ||
-                     (i->second.checkInterval > 0 && i->second.lastCheckedTime + i->second.checkInterval <= now))))
+                (i->second.evaluation_style && shouldEvaluate(i->second)))
                 sorted.push_back(i);
 
         /* Put jobsets in order of ascending trigger time, last checked
@@ -266,27 +366,24 @@ struct Evaluator
                             /* Clear the trigger time to prevent this
                                jobset from getting stuck in an endless
                                failing eval loop. */
-                            txn.parameterized
-                                ("update Jobsets set triggerTime = null where project = $1 and name = $2 and startTime is not null and triggerTime <= startTime")
-                                (jobset.name.first)
-                                (jobset.name.second)
-                                .exec();
+                            txn.exec_params0
+                                ("update Jobsets set triggerTime = null where project = $1 and name = $2 and startTime is not null and triggerTime <= startTime",
+                                 jobset.name.first,
+                                 jobset.name.second);
 
                             /* Clear the start time. */
-                            txn.parameterized
-                                ("update Jobsets set startTime = null where project = $1 and name = $2")
-                                (jobset.name.first)
-                                (jobset.name.second)
-                                .exec();
+                            txn.exec_params0
+                                ("update Jobsets set startTime = null where project = $1 and name = $2",
+                                 jobset.name.first,
+                                 jobset.name.second);
 
                             if (!WIFEXITED(status) || WEXITSTATUS(status) > 1) {
-                                txn.parameterized
-                                    ("update Jobsets set errorMsg = $1, lastCheckedTime = $2, errorTime = $2, fetchErrorMsg = null where project = $3 and name = $4")
-                                    (fmt("evaluation %s", statusToString(status)))
-                                    (now)
-                                    (jobset.name.first)
-                                    (jobset.name.second)
-                                    .exec();
+                                txn.exec_params0
+                                    ("update Jobsets set errorMsg = $1, lastCheckedTime = $2, errorTime = $2, fetchErrorMsg = null where project = $3 and name = $4",
+                                     fmt("evaluation %s", statusToString(status)),
+                                     now,
+                                     jobset.name.first,
+                                     jobset.name.second);
                             }
 
                             txn.commit();
@@ -311,7 +408,7 @@ struct Evaluator
     {
         auto conn(dbPool.get());
         pqxx::work txn(*conn);
-        txn.parameterized("update Jobsets set startTime = null").exec();
+        txn.exec("update Jobsets set startTime = null");
         txn.commit();
     }
 
@@ -361,14 +458,15 @@ int main(int argc, char * * argv)
             return true;
         });
 
-        if (!args.empty()) {
-            if (args.size() != 2) throw UsageError("Syntax: hydra-evaluator [<project> <jobset>]");
-            evaluator.evalOne = JobsetName(args[0], args[1]);
-        }
 
         if (unlock)
             evaluator.unlock();
-        else
+        else {
+            if (!args.empty()) {
+                if (args.size() != 2) throw UsageError("Syntax: hydra-evaluator [<project> <jobset>]");
+                evaluator.evalOne = JobsetName(args[0], args[1]);
+            }
             evaluator.run();
+        }
     });
 }
