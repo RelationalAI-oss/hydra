@@ -140,7 +140,7 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
         if (!build) build = *dependents.begin();
 
         buildId = build->id;
-        buildDrvPath = build->drvPath.clone();
+        buildDrvPath = build->drvPath;
         maxSilentTime = build->maxSilentTime;
         buildTimeout = build->buildTimeout;
 
@@ -201,11 +201,11 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
         };
 
         /* Do the build. */
+        NarMemberDatas narMembers;
+
         try {
             /* FIXME: referring builds may have conflicting timeouts. */
-            buildRemote(destStore, machine, step, maxSilentTime, buildTimeout, repeats, result, activeStep, updateStep);
-        } catch (NoTokens & e) {
-            result.stepStatus = bsNarSizeLimitExceeded;
+            buildRemote(destStore, machine, step, maxSilentTime, buildTimeout, repeats, result, activeStep, updateStep, narMembers);
         } catch (Error & e) {
             if (activeStep->state_.lock()->cancelled) {
                 printInfo("marking step %d of build %d as cancelled", stepNr, buildId);
@@ -220,11 +220,8 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
 
         if (result.stepStatus == bsSuccess) {
             updateStep(ssPostProcessing);
-            res = getBuildOutput(destStore, ref<FSAccessor>(result.accessor), *step->drv);
+            res = getBuildOutput(destStore, narMembers, *step->drv);
         }
-
-        result.accessor = 0;
-        result.tokens = 0;
     }
 
     time_t stepStopTime = time(0);
@@ -277,8 +274,10 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
 
         assert(stepNr);
 
-        for (auto & path : step->drv->outputPaths())
-            addRoot(path);
+        for (auto & i : step->drv->outputsAndOptPaths(*localStore)) {
+            if (i.second.second)
+               addRoot(*i.second.second);
+        }
 
         /* Register success in the database for all Build objects that
            have this step as the top-level step. Since the queue
@@ -466,8 +465,9 @@ void State::failStep(
             /* Remember failed paths in the database so that they
                won't be built again. */
             if (result.stepStatus != bsCachedFailure && result.canCache)
-                for (auto & path : step->drv->outputPaths())
-                    txn.exec_params0("insert into FailedPaths values ($1)", localStore->printStorePath(path));
+                for (auto & i : step->drv->outputsAndOptPaths(*localStore))
+                    if (i.second.second)
+                       txn.exec_params0("insert into FailedPaths values ($1)", localStore->printStorePath(*i.second.second));
 
             txn.commit();
         }

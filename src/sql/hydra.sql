@@ -10,7 +10,7 @@ create table Users (
     emailAddress  text not null,
     password      text not null, -- sha256 hash
     emailOnError  integer not null default 0,
-    type          text not null default 'hydra', -- either "hydra" or "google"
+    type          text not null default 'hydra', -- either "hydra", "google" or "github"
     publicDashboard boolean not null default false
 );
 
@@ -79,13 +79,7 @@ create table Jobsets (
     primary key   (project, name),
     foreign key   (project) references Projects(name) on delete cascade on update cascade,
     constraint    Jobsets_id_unique UNIQUE(id)
-#ifdef SQLITE
-    ,
-    foreign key   (project, name, nixExprInput) references JobsetInputs(project, jobset, name)
-#endif
 );
-
-#ifdef POSTGRESQL
 
 create function notifyJobsetSharesChanged() returns trigger as 'begin notify jobset_shares_changed; return null; end;' language plpgsql;
 create trigger JobsetSharesChanged after update on Jobsets for each row
@@ -103,9 +97,6 @@ create trigger JobsetSchedulingChanged after update on Jobsets for each row
         or (old.checkInterval != new.checkInterval)
         or (old.enabled != new.enabled))
   execute procedure notifyJobsetSchedulingChanged();
-
-#endif
-
 
 create table JobsetRenames (
     project       text not null,
@@ -143,25 +134,8 @@ create table JobsetInputAlts (
 );
 
 
-create table Jobs (
-    project       text not null,
-    jobset        text not null,
-    jobset_id     integer not null,
-    name          text not null,
-
-    primary key   (project, jobset, name),
-    foreign key   (jobset_id) references Jobsets(id) on delete cascade,
-    foreign key   (project) references Projects(name) on delete cascade on update cascade,
-    foreign key   (project, jobset) references Jobsets(project, name) on delete cascade on update cascade
-);
-
-
 create table Builds (
-#ifdef POSTGRESQL
     id            serial primary key not null,
-#else
-    id            integer primary key autoincrement not null,
-#endif
 
     finished      integer not null, -- 0 = scheduled, 1 = finished
 
@@ -239,12 +213,9 @@ create table Builds (
 
     foreign key (jobset_id) references Jobsets(id) on delete cascade,
     foreign key (project) references Projects(name) on update cascade,
-    foreign key (project, jobset) references Jobsets(project, name) on update cascade,
-    foreign key (project, jobset, job) references Jobs(project, jobset, name) on update cascade
+    foreign key (project, jobset) references Jobsets(project, name) on update cascade
 );
 
-
-#ifdef POSTGRESQL
 
 create function notifyBuildsDeleted() returns trigger as 'begin notify builds_deleted; return null; end;' language plpgsql;
 create trigger BuildsDeleted after delete on Builds execute procedure notifyBuildsDeleted();
@@ -260,8 +231,6 @@ create trigger BuildCancelled after update on Builds for each row
 create function notifyBuildBumped() returns trigger as 'begin notify builds_bumped; return null; end;' language plpgsql;
 create trigger BuildBumped after update on Builds for each row
   when (old.globalPriority != new.globalPriority) execute procedure notifyBuildBumped();
-
-#endif
 
 
 create table BuildOutputs (
@@ -332,11 +301,7 @@ create table BuildStepOutputs (
 
 -- Inputs of builds.
 create table BuildInputs (
-#ifdef POSTGRESQL
     id            serial primary key not null,
-#else
-    id            integer primary key autoincrement not null,
-#endif
 
     -- Which build this input belongs to.
     build         integer,
@@ -365,7 +330,6 @@ create table BuildProducts (
     type          text not null, -- "nix-build", "file", "doc", "report", ...
     subtype       text not null, -- "source-dist", "rpm", ...
     fileSize      bigint,
-    sha1hash      text,
     sha256hash    text,
     path          text,
     name          text not null, -- generally just the filename part of `path'
@@ -392,15 +356,13 @@ create table BuildMetrics (
     primary key   (build, name),
     foreign key   (build) references Builds(id) on delete cascade,
     foreign key   (project) references Projects(name) on update cascade,
-    foreign key   (project, jobset) references Jobsets(project, name) on update cascade,
-    foreign key   (project, jobset, job) references Jobs(project, jobset, name) on update cascade
+    foreign key   (project, jobset) references Jobsets(project, name) on update cascade
 );
 
 
 -- Cache for inputs of type "path" (used for testing Hydra), storing
 -- the SHA-256 hash and store path for each source path.  Also stores
--- the timestamp when we first saw the path have these contents, which
--- may be used to generate release names.
+-- the timestamp when we first saw the path have these contents.
 create table CachedPathInputs (
     srcPath       text not null,
     timestamp     integer not null, -- when we first saw this hash
@@ -472,44 +434,14 @@ create table SystemTypes (
 );
 
 
--- A release is a named set of builds.  The ReleaseMembers table lists
--- the builds that constitute each release.
-create table Releases (
-    project       text not null,
-    name          text not null,
-
-    timestamp     integer not null,
-
-    description   text,
-
-    primary key   (project, name),
-    foreign key   (project) references Projects(name) on delete cascade
-);
-
-
-create table ReleaseMembers (
-    project       text not null,
-    release_      text not null,
-    build         integer not null,
-
-    description   text,
-
-    primary key   (project, release_, build),
-    foreign key   (project) references Projects(name) on delete cascade on update cascade,
-    foreign key   (project, release_) references Releases(project, name) on delete cascade on update cascade,
-    foreign key   (build) references Builds(id)
-);
-
-
 create table JobsetEvals (
-#ifdef POSTGRESQL
     id            serial primary key not null,
-#else
-    id            integer primary key autoincrement not null,
-#endif
 
     project       text not null,
     jobset        text not null,
+
+    errorMsg      text, -- error output from the evaluator
+    errorTime     integer, -- timestamp associated with errorMsg
 
     timestamp     integer not null, -- when this entry was added
     checkoutTime  integer not null, -- how long obtaining the inputs took (in seconds)
@@ -577,11 +509,7 @@ create table UriRevMapper (
 
 
 create table NewsItems (
-#ifdef POSTGRESQL
     id            serial primary key not null,
-#else
-    id            integer primary key autoincrement not null,
-#endif
     contents      text not null,
     createTime    integer not null,
     author        text not null,
@@ -604,8 +532,7 @@ create table StarredJobs (
     primary key   (userName, project, jobset, job),
     foreign key   (userName) references Users(userName) on update cascade on delete cascade,
     foreign key   (project) references Projects(name) on update cascade on delete cascade,
-    foreign key   (project, jobset) references Jobsets(project, name) on update cascade on delete cascade,
-    foreign key   (project, jobset, job) references Jobs(project, jobset, name) on update cascade on delete cascade
+    foreign key   (project, jobset) references Jobsets(project, name) on update cascade on delete cascade
 );
 
 
@@ -614,7 +541,6 @@ create table FailedPaths (
     path text primary key not null
 );
 
-#ifdef POSTGRESQL
 
 -- Needed because Postgres doesn't have "ignore duplicate" or upsert
 -- yet.
@@ -622,7 +548,6 @@ create rule IdempotentInsert as on insert to FailedPaths
   where exists (select 1 from FailedPaths where path = new.path)
   do instead nothing;
 
-#endif
 
 
 create table SystemStatus (
@@ -639,7 +564,6 @@ create table NrBuilds (
 
 insert into NrBuilds(what, count) values('finished', 0);
 
-#ifdef POSTGRESQL
 
 create function modifyNrBuildsFinished() returns trigger as $$
   begin
@@ -657,8 +581,6 @@ $$ language plpgsql;
 create trigger NrBuildsFinished after insert or update or delete on Builds
   for each row
   execute procedure modifyNrBuildsFinished();
-
-#endif
 
 
 -- Some indices.
@@ -682,8 +604,8 @@ create index IndexBuildsOnProject on Builds(project);
 create index IndexBuildsOnTimestamp on Builds(timestamp);
 create index IndexBuildsOnFinishedStopTime on Builds(finished, stoptime DESC);
 create index IndexBuildsOnJobFinishedId on builds(project, jobset, job, system, finished, id DESC);
-create index IndexBuildsOnJobsetIdFinishedId on Builds(id DESC, finished, job, jobset_id);
-create index IndexFinishedSuccessfulBuilds on Builds(id DESC, buildstatus, finished, job, jobset_id) where buildstatus = 0 and finished = 1;
+create index IndexBuildsOnJobsetIdFinishedId on Builds(jobset_id, job, finished, id DESC);
+create index IndexFinishedSuccessfulBuilds on Builds(jobset_id, job, finished, buildstatus, id DESC) where buildstatus = 0 and finished = 1;
 create index IndexBuildsOnDrvPath on Builds(drvPath);
 create index IndexCachedHgInputsOnHash on CachedHgInputs(uri, branch, sha256hash);
 create index IndexCachedGitInputsOnHash on CachedGitInputs(uri, branch, sha256hash);
@@ -694,7 +616,8 @@ create index IndexJobsetEvalMembersOnEval on JobsetEvalMembers(eval);
 create index IndexJobsetInputAltsOnInput on JobsetInputAlts(project, jobset, input);
 create index IndexJobsetInputAltsOnJobset on JobsetInputAlts(project, jobset);
 create index IndexProjectsOnEnabled on Projects(enabled);
-create index IndexReleaseMembersOnBuild on ReleaseMembers(build);
+create index IndexBuildOutputsPath on BuildOutputs using hash(path);
+
 
 --  For hydra-update-gc-roots.
 create index IndexBuildsOnKeep on Builds(keep) where keep = 1;
@@ -704,7 +627,6 @@ create index IndexJobsetEvalsOnJobsetId on JobsetEvals(project, jobset, id desc)
 
 create index IndexBuildsOnNotificationPendingSince on Builds(notificationPendingSince) where notificationPendingSince is not null;
 
-#ifdef POSTGRESQL
 -- The pg_trgm extension has to be created by a superuser. The NixOS
 -- module creates this extension in the systemd prestart script. We
 -- then ensure the extension has been created before creating the
@@ -721,4 +643,3 @@ exception when others then
     raise warning 'HINT: Temporary provide superuser role to your Hydra Postgresql user and run the script src/sql/upgrade-57.sql';
     raise warning 'The pg_trgm index on builds.drvpath has been skipped (slower complex queries on builds.drvpath)';
 end$$;
-#endif

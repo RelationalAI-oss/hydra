@@ -16,11 +16,11 @@ use Catalyst qw/ConfigLoader
                 Session
                 Session::Store::FastMmap
                 Session::State::Cookie
-                AccessLog
                 Captcha/,
                 '-Log=warn,fatal,error';
 use CatalystX::RoleApplicator;
-
+use YAML qw(LoadFile);
+use Path::Class 'file';
 
 our $VERSION = '0.01';
 
@@ -44,6 +44,9 @@ __PACKAGE__->config(
                     role_field => "role",
                 },
             },
+            ldap => $ENV{'HYDRA_LDAP_CONFIG'} ? LoadFile(
+                file($ENV{'HYDRA_LDAP_CONFIG'})
+            ) : undef
         },
     },
     'Plugin::Static::Simple' => {
@@ -57,11 +60,6 @@ __PACKAGE__->config(
         expires => 3600 * 24 * 7,
         storage => Hydra::Model::DB::getHydraPath . "/www/session_data",
         unlink_on_exit => 0
-    },
-    'Plugin::AccessLog' => {
-        formatter => {
-            format => '%h %l %u %t "%r" %s %b "%{Referer}i" "%{User-Agent}i" %[handle_time]',
-        },
     },
     'Plugin::Captcha' => {
         session_name => 'hydra-captcha',

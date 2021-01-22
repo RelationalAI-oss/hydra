@@ -214,7 +214,7 @@ sub scmdiff : Path('/api/scmdiff') Args(0) {
 sub triggerJobset {
     my ($self, $c, $jobset, $force) = @_;
     print STDERR "triggering jobset ", $jobset->get_column('project') . ":" . $jobset->name, "\n";
-    txn_do($c->model('DB')->schema, sub {
+    $c->model('DB')->schema->txn_do(sub {
         $jobset->update({ triggertime => time });
         $jobset->update({ forceeval => 1 }) if $force;
     });
@@ -265,7 +265,7 @@ sub push_github : Chained('api') PathPart('push-github') Args(0) {
     triggerJobset($self, $c, $_, 0) foreach $c->model('DB::Jobsets')->search(
         { 'project.enabled' => 1, 'me.enabled' => 1 },
         { join => 'project'
-        , where => \ [ 'me.checkinterval = 0 and exists (select 1 from JobsetInputAlts where project = me.project and jobset = me.name and value like ?)', [ 'value', "%github.com%$owner/$repo%" ] ]
+        , where => \ [ 'me.checkinterval = 0 and ( me.flake like ? or exists (select 1 from JobsetInputAlts where project = me.project and jobset = me.name and value like ?))', [ 'flake', "%github%$owner/$repo%"], [ 'value', "%github.com%$owner/$repo%" ] ]
         });
     $c->response->body("");
 }

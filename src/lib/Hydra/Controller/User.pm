@@ -4,6 +4,7 @@ use utf8;
 use strict;
 use warnings;
 use base 'Hydra::Base::Controller::REST';
+use File::Slurp;
 use Crypt::RandPasswd;
 use Digest::SHA1 qw(sha1_hex);
 use Hydra::Helper::Nix;
@@ -12,6 +13,7 @@ use Hydra::Helper::Email;
 use LWP::UserAgent;
 use JSON;
 use HTML::Entities;
+use Encode qw(decode);
 
 
 __PACKAGE__->config->{namespace} = '';
@@ -28,8 +30,12 @@ sub login_POST {
     error($c, "You must specify a user name.") if $username eq "";
     error($c, "You must specify a password.") if $password eq "";
 
-    accessDenied($c, "Bad username or password.")
-        if !$c->authenticate({username => $username, password => $password});
+    if ($c->get_auth_realm('ldap') && $c->authenticate({username => $username, password => $password}, 'ldap')) {
+        doLDAPLogin($self, $c, $username);
+    } elsif ($c->authenticate({username => $username, password => $password})) {}
+    else {
+        accessDenied($c, "Bad username or password.")
+    }
 
     currentUser_GET($self, $c);
 }
@@ -44,6 +50,36 @@ sub logout_POST {
     $self->status_no_content($c);
 }
 
+sub doLDAPLogin {
+    my ($self, $c, $username) = @_;
+
+    my $user = $c->find_user({ username => $username });
+    my $LDAPUser = $c->find_user({ username => $username }, 'ldap');
+    my @LDAPRoles = grep { (substr $_, 0, 5) eq "hydra" } $LDAPUser->roles;
+
+    if (!$user) {
+        $c->model('DB::Users')->create(
+            { username => $username
+            , fullname => decode('UTF-8', $LDAPUser->cn)
+            , password => "!"
+            , emailaddress => $LDAPUser->mail
+            , type => "LDAP"
+        });
+        $user = $c->find_user({ username => $username }) or die;
+    } else {
+        $user->update(
+            { fullname => decode('UTF-8', $LDAPUser->cn)
+            , password => "!"
+            , emailaddress => $LDAPUser->mail
+            , type => "LDAP"
+        });
+    }
+    $user->userroles->delete;
+    if (@LDAPRoles) {
+        $user->userroles->create({ role => (substr $_, 6) }) for @LDAPRoles;
+    }
+    $c->set_authenticated($user);
+}
 
 sub doEmailLogin {
     my ($self, $c, $type, $email, $fullName) = @_;
@@ -119,6 +155,67 @@ sub google_login :Path('/google-login') Args(0) {
     doEmailLogin($self, $c, "google", $data->{email}, $data->{name} // undef);
 }
 
+sub github_login :Path('/github-login') Args(0) {
+    my ($self, $c) = @_;
+
+    my $client_id = $c->config->{github_client_id} or die "github_client_id not configured.";
+    my $client_secret = $c->config->{github_client_secret} // do {
+        my $client_secret_file = $c->config->{github_client_secret_file} or die "github_client_secret nor github_client_secret_file is configured.";
+        my $client_secret = read_file($client_secret_file);
+        $client_secret =~ s/\s+//;
+        $client_secret;
+    };
+    die "No github secret configured" unless $client_secret;
+
+    my $ua = new LWP::UserAgent;
+    my $response = $ua->post(
+        'https://github.com/login/oauth/access_token',
+        {
+            client_id => $client_id,
+            client_secret => $client_secret,
+            code => ($c->req->params->{code} // die "No token."),
+        }, Accept => 'application/json');
+    error($c, "Did not get a response from GitHub.") unless $response->is_success;
+
+    my $data = decode_json($response->decoded_content) or die;
+    my $access_token = $data->{access_token} // die "No access_token in response from GitHub.";
+
+    $response = $ua->get('https://api.github.com/user/emails', Accept => 'application/vnd.github.v3+json', Authorization => "token $access_token");
+    error($c, "Did not get a response from GitHub for email info.") unless $response->is_success;
+
+    $data = decode_json($response->decoded_content) or die;
+    my $email;
+
+    foreach my $eml (@{$data}) {
+        $email = $eml->{email} if $eml->{verified} && $eml->{primary};
+    }
+
+    die "No primary email for this GitHub profile" unless $email;
+
+    $response = $ua->get('https://api.github.com/user', Authorization => "token $access_token");
+    error($c, "Did not get a response from GitHub for user info.") unless $response->is_success;
+    $data = decode_json($response->decoded_content) or die;
+
+    doEmailLogin($self, $c, "github", $email, $data->{name} // undef);
+
+    $c->res->redirect($c->uri_for($c->res->cookies->{'after_github'}));
+}
+
+sub github_redirect :Path('/github-redirect') Args(0) {
+    my ($self, $c) = @_;
+
+    my $client_id = $c->config->{github_client_id} or die "github_client_id not configured.";
+
+    my $after = "/" . $c->req->params->{after};
+
+    $c->res->cookies->{'after_github'} = {
+        name => 'after_github',
+        value => $after,
+    };
+
+    $c->res->redirect("https://github.com/login/oauth/authorize?client_id=$client_id&scope=user:email");
+}
+
 
 sub captcha :Local Args(0) {
     my ($self, $c) = @_;
@@ -163,7 +260,7 @@ sub register :Local Args(0) {
     error($c, "Your user name is already taken.")
         if $c->find_user({ username => $userName });
 
-    txn_do($c->model('DB')->schema, sub {
+    $c->model('DB')->schema->txn_do(sub {
         my $user = $c->model('DB::Users')->create(
             { username => $userName
             , password => "!"
@@ -261,7 +358,7 @@ sub edit_PUT {
         return;
     }
 
-    txn_do($c->model('DB')->schema, sub {
+    $c->model('Db')->schema->txn_do(sub {
         updatePreferences($c, $user);
     });
 
@@ -339,10 +436,10 @@ sub dashboard :Chained('dashboard_base') :PathPart('') :Args(0) {
     # Get the N most recent builds for each starred job.
     $c->stash->{starredJobs} = [];
     foreach my $j ($c->stash->{user}->starredjobs->search({}, { order_by => ['project', 'jobset', 'job'] })) {
-        my @builds = $j->job->builds->search(
-            { },
+        my @builds = $j->jobset->builds->search(
+            { job => $j->job },
             { rows => 20, order_by => "id desc" });
-        push @{$c->stash->{starredJobs}}, { job => $j->job, builds => [@builds] };
+        push @{$c->stash->{starredJobs}}, { job => $j, builds => [@builds] };
     }
 }
 

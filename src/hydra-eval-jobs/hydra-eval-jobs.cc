@@ -1,5 +1,6 @@
 #include <map>
 #include <iostream>
+#include <thread>
 
 #include "shared.hh"
 #include "store-api.hh"
@@ -13,6 +14,7 @@
 #include "flake/flake.hh"
 #include "attr-path.hh"
 #include "derivations.hh"
+#include "local-fs-store.hh"
 
 #include "hydra-config.hh"
 
@@ -35,29 +37,33 @@ struct MyArgs : MixEvalArgs, MixCommonArgs
 
     MyArgs() : MixCommonArgs("hydra-eval-jobs")
     {
-        mkFlag()
-            .longName("help")
-            .description("show usage information")
-            .handler([&]() {
+        addFlag({
+            .longName = "help",
+            .description = "show usage information",
+            .handler = {[&]() {
                 printHelp(programName, std::cout);
                 throw Exit();
-            });
+            }}
+        });
 
-        mkFlag()
-            .longName("gc-roots-dir")
-            .description("garbage collector roots directory")
-            .labels({"path"})
-            .dest(&gcRootsDir);
+        addFlag({
+            .longName = "gc-roots-dir",
+            .description = "garbage collector roots directory",
+            .labels = {"path"},
+            .handler = {&gcRootsDir}
+        });
 
-        mkFlag()
-            .longName("dry-run")
-            .description("don't create store derivations")
-            .set(&dryRun, true);
+        addFlag({
+            .longName = "dry-run",
+            .description = "don't create store derivations",
+            .handler = {&dryRun, true}
+        });
 
-        mkFlag()
-            .longName("flake")
-            .description("build a flake")
-            .set(&flake, true);
+        addFlag({
+            .longName = "flake",
+            .description = "build a flake",
+            .handler = {&flake, true}
+        });
 
         expectArg("expr", &releaseExpr);
     }
@@ -72,12 +78,12 @@ static std::string queryMetaStrings(EvalState & state, DrvInfo & drv, const stri
 
     rec = [&](Value & v) {
         state.forceValue(v);
-        if (v.type == tString)
+        if (v.type() == nString)
             res.push_back(v.string.s);
         else if (v.isList())
             for (unsigned int n = 0; n < v.listSize(); ++n)
                 rec(*v.listElems()[n]);
-        else if (v.type == tAttrs) {
+        else if (v.type() == nAttrs) {
             auto a = v.attrs->find(state.symbols.create(subAttribute));
             if (a != v.attrs->end())
                 res.push_back(state.forceString(*a->value));
@@ -195,7 +201,7 @@ static void worker(
                     for (unsigned int n = 0; n < a->value->listSize(); ++n) {
                         auto v = a->value->listElems()[n];
                         state.forceValue(*v);
-                        if (v->type == tString)
+                        if (v->type() == nString)
                             job["namedConstituents"].push_back(state.forceStringNoCtx(*v));
                     }
                 }
@@ -207,7 +213,7 @@ static void worker(
                 if (gcRootsDir != "" && localStore) {
                     Path root = gcRootsDir + "/" + std::string(baseNameOf(drvPath));
                     if (!pathExists(root))
-                        localStore->addPermRoot(localStore->parseStorePath(drvPath), root, false);
+                        localStore->addPermRoot(localStore->parseStorePath(drvPath), root);
                 }
 
                 nlohmann::json out;
@@ -218,7 +224,7 @@ static void worker(
                 reply["job"] = std::move(job);
             }
 
-            else if (v->type == tAttrs) {
+            else if (v->type() == nAttrs) {
                 auto attrs = nlohmann::json::array();
                 StringSet ss;
                 for (auto & i : v->attrs->lexicographicOrder()) {
@@ -232,7 +238,7 @@ static void worker(
                 reply["attrs"] = std::move(attrs);
             }
 
-            else if (v->type == tNull)
+            else if (v->type() == nNull)
                 ;
 
             else throw TypeError("attribute '%s' is %s, which is not supported", attrPath, showType(*v));
@@ -266,7 +272,7 @@ int main(int argc, char * * argv)
 
     return handleExceptions(argv[0], [&]() {
 
-        auto config = std::make_unique<::Config>();
+        auto config = std::make_unique<HydraConfig>();
 
         auto nrWorkers = config->getIntOption("evaluator_workers", 1);
         maxMemorySize = config->getIntOption("evaluator_max_memory_size", 4096);
@@ -449,29 +455,29 @@ int main(int argc, char * * argv)
                     job["constituents"].push_back(drvPath2);
                 }
             } else {
-                std::string drvPath = job["drvPath"];
-                auto drv = readDerivation(*store, drvPath);
+                auto drvPath = store->parseStorePath((std::string) job["drvPath"]);
+                auto drv = store->readDerivation(drvPath);
 
                 for (std::string jobName2 : *named) {
                     auto job2 = state->jobs.find(jobName2);
                     if (job2 == state->jobs.end())
                         throw Error("aggregate job '%s' references non-existent job '%s'", jobName, jobName2);
-                    std::string drvPath2 = (*job2)["drvPath"];
-                    auto drv2 = readDerivation(*store, drvPath2);
-                    job["constituents"].push_back(drvPath2);
-                    drv.inputDrvs[store->parseStorePath(drvPath2)] = {drv2.outputs.begin()->first};
+                    auto drvPath2 = store->parseStorePath((std::string) (*job2)["drvPath"]);
+                    auto drv2 = store->readDerivation(drvPath2);
+                    job["constituents"].push_back(store->printStorePath(drvPath2));
+                    drv.inputDrvs[drvPath2] = {drv2.outputs.begin()->first};
                 }
 
-                std::string drvName(store->parseStorePath(drvPath).name());
+                std::string drvName(drvPath.name());
                 assert(hasSuffix(drvName, drvExtension));
                 drvName.resize(drvName.size() - drvExtension.size());
-                auto h = hashDerivationModulo(*store, drv, true);
+                auto h = std::get<Hash>(hashDerivationModulo(*store, drv, true));
                 auto outPath = store->makeOutputPath("out", h, drvName);
                 drv.env["out"] = store->printStorePath(outPath);
-                drv.outputs.insert_or_assign("out", DerivationOutput(outPath.clone(), "", ""));
-                auto newDrvPath = store->printStorePath(writeDerivation(store, drv, drvName));
+                drv.outputs.insert_or_assign("out", DerivationOutput { .output = DerivationOutputInputAddressed { .path = outPath } });
+                auto newDrvPath = store->printStorePath(writeDerivation(*store, drv));
 
-                debug("rewrote aggregate derivation %s -> %s", drvPath, newDrvPath);
+                debug("rewrote aggregate derivation %s -> %s", store->printStorePath(drvPath), newDrvPath);
 
                 job["drvPath"] = newDrvPath;
                 job["outputs"]["out"] = store->printStorePath(outPath);

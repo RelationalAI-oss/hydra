@@ -23,17 +23,9 @@ using namespace nix;
 namespace nix {
 
 template<> void toJSON<std::atomic<long>>(std::ostream & str, const std::atomic<long> & n) { str << n; }
-template<> void toJSON<std::atomic<unsigned long>>(std::ostream & str, const std::atomic<unsigned long> & n) { str << n; }
-template<> void toJSON<std::atomic<unsigned long long>>(std::ostream & str, const std::atomic<unsigned long long> & n) { str << n; }
+template<> void toJSON<std::atomic<uint64_t>>(std::ostream & str, const std::atomic<uint64_t> & n) { str << n; }
 template<> void toJSON<double>(std::ostream & str, const double & n) { str << n; }
 
-}
-
-
-static uint64_t getMemSize()
-{
-    auto pages = sysconf(_SC_PHYS_PAGES);
-    return pages >= 0 ? pages * sysconf(_SC_PAGESIZE) : 4ULL << 30;
 }
 
 
@@ -46,17 +38,14 @@ std::string getEnvOrDie(const std::string & key)
 
 
 State::State()
-    : config(std::make_unique<::Config>())
+    : config(std::make_unique<HydraConfig>())
     , maxUnsupportedTime(config->getIntOption("max_unsupported_time", 0))
     , dbPool(config->getIntOption("max_db_connections", 128))
-    , memoryTokens(config->getIntOption("nar_buffer_size", getMemSize() / 2))
     , maxOutputSize(config->getIntOption("max_output_size", 2ULL << 30))
     , maxLogSize(config->getIntOption("max_log_size", 64ULL << 20))
     , uploadLogsToBinaryCache(config->getBoolOption("upload_logs_to_binary_cache", false))
     , rootsDir(config->getStrOption("gc_roots_dir", fmt("%s/gcroots/per-user/%s/hydra-roots", settings.nixStateDir, getEnvOrDie("LOGNAME"))))
 {
-    debug("using %d bytes for the NAR buffer", memoryTokens.capacity());
-
     hydraData = getEnvOrDie("HYDRA_DATA");
 
     logDir = canonPath(hydraData + "/build-logs");
@@ -187,7 +176,7 @@ void State::monitorMachinesFile()
             struct stat st;
             if (stat(machinesFile.c_str(), &st) != 0) {
                 if (errno != ENOENT)
-                    throw SysError(format("getting stats about ‘%1%’") % machinesFile);
+                    throw SysError("getting stats about ‘%s’", machinesFile);
                 st.st_ino = st.st_mtime = 0;
             }
             auto & old(fileStats[n]);
@@ -219,7 +208,7 @@ void State::monitorMachinesFile()
             // FIXME: use inotify.
             sleep(30);
         } catch (std::exception & e) {
-            printMsg(lvlError, format("reloading machines file: %1%") % e.what());
+            printMsg(lvlError, "reloading machines file: %s", e.what());
             sleep(5);
         }
     }
@@ -267,10 +256,10 @@ unsigned int State::createBuildStep(pqxx::work & txn, time_t startTime, BuildID 
 
     if (r.affected_rows() == 0) goto restart;
 
-    for (auto & output : step->drv->outputs)
+    for (auto & [name, output] : step->drv->outputs)
         txn.exec_params0
             ("insert into BuildStepOutputs (build, stepnr, name, path) values ($1, $2, $3, $4)",
-             buildId, stepNr, output.first, localStore->printStorePath(output.second.path));
+            buildId, stepNr, name, localStore->printStorePath(*output.path(*localStore, step->drv->name, name)));
 
     if (status == bsBusy)
         txn.exec(fmt("notify step_started, '%d\t%d'", buildId, stepNr));
@@ -417,14 +406,13 @@ void State::markSucceededBuild(pqxx::work & txn, Build::ptr build,
     unsigned int productNr = 1;
     for (auto & product : res.products) {
         txn.exec_params0
-            ("insert into BuildProducts (build, productnr, type, subtype, fileSize, sha1hash, sha256hash, path, name, defaultPath) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            ("insert into BuildProducts (build, productnr, type, subtype, fileSize, sha256hash, path, name, defaultPath) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
              build->id,
              productNr++,
              product.type,
              product.subtype,
-             product.isRegular ? std::make_optional(product.fileSize) : std::nullopt,
-             product.isRegular ? std::make_optional(product.sha1hash.to_string(Base16, false)) : std::nullopt,
-             product.isRegular ? std::make_optional(product.sha256hash.to_string(Base16, false)) : std::nullopt,
+             product.fileSize ? std::make_optional(*product.fileSize) : std::nullopt,
+             product.sha256hash ? std::make_optional(product.sha256hash->to_string(Base16, false)) : std::nullopt,
              product.path,
              product.name,
              product.defaultPath);
@@ -452,9 +440,10 @@ void State::markSucceededBuild(pqxx::work & txn, Build::ptr build,
 bool State::checkCachedFailure(Step::ptr step, Connection & conn)
 {
     pqxx::work txn(conn);
-    for (auto & path : step->drv->outputPaths())
-        if (!txn.exec_params("select 1 from FailedPaths where path = $1", localStore->printStorePath(path)).empty())
-            return true;
+    for (auto & i : step->drv->outputsAndOptPaths(*localStore))
+        if (i.second.second)
+            if (!txn.exec_params("select 1 from FailedPaths where path = $1", localStore->printStorePath(*i.second.second)).empty())
+                return true;
     return false;
 }
 
@@ -544,7 +533,6 @@ void State::dumpStatus(Connection & conn)
         root.attr("dispatchTimeAvgMs", nrDispatcherWakeups == 0 ? 0.0 : (float) dispatchTimeMs / nrDispatcherWakeups);
         root.attr("nrDbConnections", dbPool.count());
         root.attr("nrActiveDbUpdates", nrActiveDbUpdates);
-        root.attr("memoryTokensInUse", memoryTokens.currentUse());
 
         {
             auto nested = root.object("machines");
@@ -804,7 +792,7 @@ void State::run(BuildID buildOne)
                 auto conn(dbPool.get());
                 pqxx::work txn(*conn);
                 for (auto & step : steps) {
-                    printMsg(lvlError, format("cleaning orphaned step %d of build %d") % step.second % step.first);
+                    printMsg(lvlError, "cleaning orphaned step %d of build %d", step.second, step.first);
                     txn.exec_params0
                         ("update BuildSteps set busy = 0, status = $1 where build = $2 and stepnr = $3 and busy != 0",
                          (int) bsAborted,
@@ -813,7 +801,7 @@ void State::run(BuildID buildOne)
                 }
                 txn.commit();
             } catch (std::exception & e) {
-                printMsg(lvlError, format("cleanup thread: %1%") % e.what());
+                printMsg(lvlError, "cleanup thread: %s", e.what());
                 auto orphanedSteps_(orphanedSteps.lock());
                 orphanedSteps_->insert(steps.begin(), steps.end());
             }
@@ -829,7 +817,7 @@ void State::run(BuildID buildOne)
                 if (auto remoteStore = getDestStore().dynamic_pointer_cast<RemoteStore>())
                     remoteStore->flushBadConnections();
             } catch (std::exception & e) {
-                printMsg(lvlError, format("connection flush thread: %1%") % e.what());
+                printMsg(lvlError, "connection flush thread: %s", e.what());
             }
         }
     }).detach();
@@ -845,7 +833,7 @@ void State::run(BuildID buildOne)
                 dumpStatus(*conn);
             }
         } catch (std::exception & e) {
-            printMsg(lvlError, format("main thread: %1%") % e.what());
+            printMsg(lvlError, "main thread: %s", e.what());
             sleep(10); // probably a DB problem, so don't retry right away
         }
     }

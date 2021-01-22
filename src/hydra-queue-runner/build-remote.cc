@@ -50,7 +50,7 @@ static void openConnection(Machine::ptr machine, Path tmpDir, int stderrFD, Chil
         Strings argv;
         if (machine->isLocalhost()) {
             pgmName = "nix-store";
-            argv = {"nix-store", "--serve", "--write"};
+            argv = {"nix-store", "--builders", "", "--serve", "--write"};
         }
         else {
             pgmName = "ssh";
@@ -95,12 +95,12 @@ static void copyClosureTo(std::timed_mutex & sendMutex, ref<Store> destStore,
        the remote host to substitute missing paths. */
     // FIXME: substitute output pollutes our build log
     to << cmdQueryValidPaths << 1 << useSubstitutes;
-    writeStorePaths(*destStore, to, closure);
+    worker_proto::write(*destStore, to, closure);
     to.flush();
 
     /* Get back the set of paths that are already valid on the remote
        host. */
-    auto present = readStorePaths<StorePathSet>(*destStore, from);
+    auto present = worker_proto::read(*destStore, from, Phantom<StorePathSet> {});
 
     if (present.size() == closure.size()) return;
 
@@ -108,9 +108,9 @@ static void copyClosureTo(std::timed_mutex & sendMutex, ref<Store> destStore,
 
     StorePathSet missing;
     for (auto i = sorted.rbegin(); i != sorted.rend(); ++i)
-        if (!present.count(*i)) missing.insert(i->clone());
+        if (!present.count(*i)) missing.insert(*i);
 
-    printMsg(lvlDebug, format("sending %1% missing paths") % missing.size());
+    printMsg(lvlDebug, "sending %d missing paths", missing.size());
 
     std::unique_lock<std::timed_mutex> sendLock(sendMutex,
         std::chrono::seconds(600));
@@ -124,11 +124,42 @@ static void copyClosureTo(std::timed_mutex & sendMutex, ref<Store> destStore,
 }
 
 
+// FIXME: use Store::topoSortPaths().
+StorePaths reverseTopoSortPaths(const std::map<StorePath, ValidPathInfo> & paths)
+{
+    StorePaths sorted;
+    StorePathSet visited;
+
+    std::function<void(const StorePath & path)> dfsVisit;
+
+    dfsVisit = [&](const StorePath & path) {
+        if (!visited.insert(path).second) return;
+
+        auto info = paths.find(path);
+        auto references = info == paths.end() ? StorePathSet() : info->second.references;
+
+        for (auto & i : references)
+            /* Don't traverse into paths that don't exist.  That can
+               happen due to substitutes for non-existent paths. */
+            if (i != path && paths.count(i))
+                dfsVisit(i);
+
+        sorted.push_back(path);
+    };
+
+    for (auto & i : paths)
+        dfsVisit(i.first);
+
+    return sorted;
+}
+
+
 void State::buildRemote(ref<Store> destStore,
     Machine::ptr machine, Step::ptr step,
     unsigned int maxSilentTime, unsigned int buildTimeout, unsigned int repeats,
     RemoteResult & result, std::shared_ptr<ActiveStep> activeStep,
-    std::function<void(StepState)> updateStep)
+    std::function<void(StepState)> updateStep,
+    NarMemberDatas & narMembers)
 {
     assert(BuildResult::TimedOut == 8);
 
@@ -139,7 +170,7 @@ void State::buildRemote(ref<Store> destStore,
     createDirs(dirOf(result.logFile));
 
     AutoCloseFD logFD = open(result.logFile.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0666);
-    if (!logFD) throw SysError(format("creating log file ‘%1%’") % result.logFile);
+    if (!logFD) throw SysError("creating log file ‘%s’", result.logFile);
 
     nix::Path tmpDir = createTempDir();
     AutoDelete tmpDirDel(tmpDir, true);
@@ -148,6 +179,7 @@ void State::buildRemote(ref<Store> destStore,
 
         updateStep(ssConnecting);
 
+        // FIXME: rewrite to use Store.
         Child child;
         openConnection(machine, tmpDir, logFD.get(), child);
 
@@ -182,15 +214,15 @@ void State::buildRemote(ref<Store> destStore,
         unsigned int remoteVersion;
 
         try {
-            to << SERVE_MAGIC_1 << 0x203;
+            to << SERVE_MAGIC_1 << 0x204;
             to.flush();
 
             unsigned int magic = readInt(from);
             if (magic != SERVE_MAGIC_2)
-                throw Error(format("protocol mismatch with ‘nix-store --serve’ on ‘%1%’") % machine->sshName);
+                throw Error("protocol mismatch with ‘nix-store --serve’ on ‘%1%’", machine->sshName);
             remoteVersion = readInt(from);
             if (GET_PROTOCOL_MAJOR(remoteVersion) != 0x200)
-                throw Error(format("unsupported ‘nix-store --serve’ protocol version on ‘%1%’") % machine->sshName);
+                throw Error("unsupported ‘nix-store --serve’ protocol version on ‘%1%’", machine->sshName);
             // Always send the derivation to localhost, since it's a
             // no-op anyway but we might not be privileged to use
             // cmdBuildDerivation (e.g. if we're running in a NixOS
@@ -203,7 +235,7 @@ void State::buildRemote(ref<Store> destStore,
         } catch (EndOfFile & e) {
             child.pid.wait();
             string s = chomp(readFile(result.logFile));
-            throw Error(format("cannot connect to ‘%1%’: %2%") % machine->sshName % s);
+            throw Error("cannot connect to ‘%1%’: %2%", machine->sshName, s);
         }
 
         {
@@ -222,18 +254,19 @@ void State::buildRemote(ref<Store> destStore,
         BasicDerivation basicDrv(*step->drv);
 
         if (sendDerivation)
-            inputs.insert(step->drvPath.clone());
+            inputs.insert(step->drvPath);
         else
             for (auto & p : step->drv->inputSrcs)
-                inputs.insert(p.clone());
+                inputs.insert(p);
 
         for (auto & input : step->drv->inputDrvs) {
-            Derivation drv2 = readDerivation(*localStore, localStore->printStorePath(input.first));
+            auto drv2 = localStore->readDerivation(input.first);
             for (auto & name : input.second) {
-                auto i = drv2.outputs.find(name);
-                if (i == drv2.outputs.end()) continue;
-                inputs.insert(i->second.path.clone());
-                basicDrv.inputSrcs.insert(i->second.path.clone());
+                if (auto i = get(drv2.outputs, name)) {
+                    auto outPath = i->path(*localStore, drv2.name, name);
+                    inputs.insert(*outPath);
+                    basicDrv.inputSrcs.insert(*outPath);
+                }
             }
         }
 
@@ -282,7 +315,7 @@ void State::buildRemote(ref<Store> destStore,
 
         if (sendDerivation) {
             to << cmdBuildPaths;
-            writeStorePaths(*localStore, to, singleton(step->drvPath));
+            worker_proto::write(*localStore, to, StorePathSet{step->drvPath});
         } else {
             to << cmdBuildDerivation << localStore->printStorePath(step->drvPath);
             writeDerivation(to, *localStore, basicDrv);
@@ -306,7 +339,7 @@ void State::buildRemote(ref<Store> destStore,
 
         if (sendDerivation) {
             if (res) {
-                result.errorMsg = (format("%1% on ‘%2%’") % readString(from) % machine->sshName).str();
+                result.errorMsg = fmt("%s on ‘%s’", readString(from), machine->sshName);
                 if (res == 100) {
                     result.stepStatus = bsFailed;
                     result.canCache = true;
@@ -394,8 +427,6 @@ void State::buildRemote(ref<Store> destStore,
         }
 
         /* Copy the output paths. */
-        result.accessor = destStore->getFSAccessor();
-
         if (!machine->isLocalhost() || localStore != std::shared_ptr<Store>(destStore)) {
             updateStep(ssReceivingOutputs);
 
@@ -403,19 +434,38 @@ void State::buildRemote(ref<Store> destStore,
 
             auto now1 = std::chrono::steady_clock::now();
 
-            auto outputs = step->drv->outputPaths();
+            StorePathSet outputs;
+            for (auto & i : step->drv->outputsAndOptPaths(*localStore)) {
+                if (i.second.second)
+                   outputs.insert(*i.second.second);
+            }
 
-            /* Query the size of the output paths. */
+            /* Get info about each output path. */
+            std::map<StorePath, ValidPathInfo> infos;
             size_t totalNarSize = 0;
             to << cmdQueryPathInfos;
-            writeStorePaths(*localStore, to, outputs);
+            worker_proto::write(*localStore, to, outputs);
             to.flush();
             while (true) {
-                if (readString(from) == "") break;
-                readString(from); // deriver
-                readStrings<PathSet>(from); // references
+                auto storePathS = readString(from);
+                if (storePathS == "") break;
+                auto deriver = readString(from); // deriver
+                auto references = worker_proto::read(*localStore, from, Phantom<StorePathSet> {});
                 readLongLong(from); // download size
-                totalNarSize += readLongLong(from);
+                auto narSize = readLongLong(from);
+                auto narHash = Hash::parseAny(readString(from), htSHA256);
+                auto ca = parseContentAddressOpt(readString(from));
+                readStrings<StringSet>(from); // sigs
+                ValidPathInfo info(localStore->parseStorePath(storePathS), narHash);
+                assert(outputs.count(info.path));
+                info.references = references;
+                info.narSize = narSize;
+                totalNarSize += info.narSize;
+                info.narHash = narHash;
+                info.ca = ca;
+                if (deriver != "")
+                    info.deriver = localStore->parseStorePath(deriver);
+                infos.insert_or_assign(info.path, info);
             }
 
             if (totalNarSize > maxOutputSize) {
@@ -423,33 +473,28 @@ void State::buildRemote(ref<Store> destStore,
                 return;
             }
 
+            /* Copy each path. */
             printMsg(lvlDebug, "copying outputs of ‘%s’ from ‘%s’ (%d bytes)",
                 localStore->printStorePath(step->drvPath), machine->sshName, totalNarSize);
 
-            /* Block until we have the required amount of memory
-               available, which is twice the NAR size (namely the
-               uncompressed and worst-case compressed NAR), plus 150
-               MB for xz compression overhead. (The xz manpage claims
-               ~94 MiB, but that's not was I'm seeing.) */
-            auto resStart = std::chrono::steady_clock::now();
-            size_t compressionCost = totalNarSize + 150 * 1024 * 1024;
-            result.tokens = std::make_unique<nix::TokenServer::Token>(memoryTokens.get(totalNarSize + compressionCost));
-            auto resStop = std::chrono::steady_clock::now();
+            auto pathsSorted = reverseTopoSortPaths(infos);
 
-            auto resMs = std::chrono::duration_cast<std::chrono::milliseconds>(resStop - resStart).count();
-            if (resMs >= 1000)
-                printMsg(lvlError, "warning: had to wait %d ms for %d memory tokens for %s",
-                    resMs, totalNarSize, localStore->printStorePath(step->drvPath));
+            for (auto & path : pathsSorted) {
+                auto & info = infos.find(path)->second;
+                to << cmdDumpStorePath << localStore->printStorePath(path);
+                to.flush();
 
-            to << cmdExportPaths << 0;
-            writeStorePaths(*localStore, to, outputs);
-            to.flush();
-            destStore->importPaths(from, result.accessor, NoCheckSigs);
+                /* Receive the NAR from the remote and add it to the
+                   destination store. Meanwhile, extract all the info from the
+                   NAR that getBuildOutput() needs. */
+                auto source2 = sinkToSource([&](Sink & sink)
+                {
+                    TeeSource tee(from, sink);
+                    extractNarData(tee, localStore->printStorePath(path), narMembers);
+                });
 
-            /* Release the tokens pertaining to NAR
-               compression. After this we only have the uncompressed
-               NAR in memory. */
-            result.tokens->give_back(compressionCost);
+                destStore->addToStore(info, *source2, NoRepair, NoCheckSigs);
+            }
 
             auto now2 = std::chrono::steady_clock::now();
 
@@ -472,7 +517,7 @@ void State::buildRemote(ref<Store> destStore,
             info->consecutiveFailures = std::min(info->consecutiveFailures + 1, (unsigned int) 4);
             info->lastFailure = now;
             int delta = retryInterval * std::pow(retryBackoff, info->consecutiveFailures - 1) + (rand() % 30);
-            printMsg(lvlInfo, format("will disable machine ‘%1%’ for %2%s") % machine->sshName % delta);
+            printMsg(lvlInfo, "will disable machine ‘%1%’ for %2%s", machine->sshName, delta);
             info->disabledUntil = now + std::chrono::seconds(delta);
         }
         throw;

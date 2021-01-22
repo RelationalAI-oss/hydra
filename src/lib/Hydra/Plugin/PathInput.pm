@@ -22,9 +22,11 @@ sub fetchInput {
     my $sha256;
     my $storePath;
 
+    my $timeout = $self->{config}->{path_input_cache_validity_seconds} // 30;
+
     # Some simple caching: don't check a path more than once every N seconds.
     (my $cachedInput) = $self->{db}->resultset('CachedPathInputs')->search(
-        {srcpath => $uri, lastseen => {">", $timestamp - 30}},
+        {srcpath => $uri, lastseen => {">", $timestamp - $timeout}},
         {rows => 1, order_by => "lastseen DESC"});
 
     if (defined $cachedInput && isValidPath($cachedInput->storepath)) {
@@ -54,7 +56,7 @@ sub fetchInput {
         # changes, we get a new "revision", but if it doesn't change
         # (or changes back), we don't get a new "revision".
         if (!defined $cachedInput) {
-            txn_do($self->{db}, sub {
+            $self->{db}->txn_do(sub {
                 $self->{db}->resultset('CachedPathInputs')->update_or_create(
                     { srcpath => $uri
                     , timestamp => $timestamp
@@ -65,7 +67,7 @@ sub fetchInput {
                 });
         } else {
             $timestamp = $cachedInput->timestamp;
-            txn_do($self->{db}, sub {
+            $self->{db}->txn_do(sub {
                 $cachedInput->update({lastseen => time});
             });
         }

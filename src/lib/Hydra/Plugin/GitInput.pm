@@ -118,7 +118,7 @@ sub fetchInput {
                             $name);
     # give preference to the options from the input value
     while (my ($opt_name, $opt_value) = each %{$options}) {
-        if ($opt_value =~ /\d+/) {
+        if ($opt_value =~ /^[+-]?\d+\z/) {
             $opt_value = int($opt_value);
         }
         $cfg->{$opt_name} = $opt_value;
@@ -218,7 +218,7 @@ sub fetchInput {
         # FIXME: time window between nix-prefetch-git and addTempRoot.
         addTempRoot($storePath);
 
-        txn_do($self->{db}, sub {
+        $self->{db}->txn_do(sub {
             $self->{db}->resultset('CachedGitInputs')->update_or_create(
                 { uri => $uri
                 , branch => $branch

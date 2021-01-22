@@ -62,7 +62,7 @@ sub jobset_PUT {
     }
 
     if (defined $c->stash->{jobset}) {
-        txn_do($c->model('DB')->schema, sub {
+        $c->model('DB')->schema->txn_do(sub {
             updateJobset($c, $c->stash->{jobset});
         });
 
@@ -74,7 +74,7 @@ sub jobset_PUT {
 
     else {
         my $jobset;
-        txn_do($c->model('DB')->schema, sub {
+        $c->model('DB')->schema->txn_do(sub {
             # Note: $jobsetName is validated in updateProject, which will
             # abort the transaction if the name isn't valid.
             $jobset = $c->stash->{project}->jobsets->create(
@@ -100,7 +100,7 @@ sub jobset_DELETE {
         error($c, "can't modify jobset of declarative project", 403);
     }
 
-    txn_do($c->model('DB')->schema, sub {
+    $c->model('DB')->schema->txn_do(sub {
         $c->stash->{jobset}->jobsetevals->delete;
         $c->stash->{jobset}->builds->delete;
         $c->stash->{jobset}->delete;
@@ -162,7 +162,7 @@ sub get_builds : Chained('jobsetChain') PathPart('') CaptureArgs(0) {
     my ($self, $c) = @_;
     $c->stash->{allBuilds} = $c->stash->{jobset}->builds;
     $c->stash->{latestSucceeded} = $c->model('DB')->resultset('LatestSucceededForJobset')
-        ->search({}, {bind => [$c->stash->{jobset}->name]});
+        ->search({}, {bind => [$c->stash->{jobset}->id]});
     $c->stash->{channelBaseName} =
         $c->stash->{project}->name . "-" . $c->stash->{jobset}->name;
 }

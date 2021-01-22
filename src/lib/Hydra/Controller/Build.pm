@@ -30,7 +30,6 @@ sub buildChain :Chained('/') :PathPart('build') :CaptureArgs(1) {
     notFound($c, "Build with ID $id doesn't exist.")
         if !defined $c->stash->{build};
 
-    $c->stash->{prevBuild} = getPreviousBuild($c->stash->{build});
     $c->stash->{prevSuccessfulBuild} = getPreviousSuccessfulBuild($c, $c->stash->{build});
     $c->stash->{firstBrokenBuild} = getNextBuild($c, $c->stash->{prevSuccessfulBuild});
 
@@ -506,7 +505,7 @@ sub keep : Chained('buildChain') PathPart Args(1) {
         registerRoot $_->path foreach $build->buildoutputs;
     }
 
-    txn_do($c->model('DB')->schema, sub {
+    $c->model('DB')->schema->txn_do(sub {
         $build->update({keep => $keep});
     });
 
@@ -529,35 +528,6 @@ sub bump : Chained('buildChain') PathPart('bump') {
     });
 
     $c->flash->{successMsg} = "Build has been bumped to the front of the queue.";
-
-    $c->res->redirect($c->uri_for($self->action_for("build"), $c->req->captures));
-}
-
-
-sub add_to_release : Chained('buildChain') PathPart('add-to-release') Args(0) {
-    my ($self, $c) = @_;
-
-    my $build = $c->stash->{build};
-
-    requireProjectOwner($c, $build->project);
-
-    my $releaseName = trim $c->request->params->{name};
-
-    my $release = $build->project->releases->find({name => $releaseName});
-
-    error($c, "This project has no release named `$releaseName'.") unless $release;
-
-    error($c, "This build is already a part of release `$releaseName'.")
-        if $release->releasemembers->find({build => $build->id});
-
-    foreach my $output ($build->buildoutputs) {
-        error($c, "This build is no longer available.") unless isValidPath $output->path;
-        registerRoot $output->path;
-    }
-
-    $release->releasemembers->create({build => $build->id, description => $build->description});
-
-    $c->flash->{successMsg} = "Build added to project <tt>$releaseName</tt>.";
 
     $c->res->redirect($c->uri_for($self->action_for("build"), $c->req->captures));
 }

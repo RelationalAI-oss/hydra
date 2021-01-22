@@ -65,15 +65,15 @@
 
   [% IF job %]
     [% WRAPPER makeSubMenu title="Job" %]
-      <li class="nav-header">[% HTML.escape(job.name) %]</li>
+      <li class="nav-header">[% HTML.escape(job) %]</li>
       <li class="divider"></li>
       [% INCLUDE menuItem
-        uri = c.uri_for(c.controller('Job').action_for('overview'), [project.name, jobset.name, job.name])
+        uri = c.uri_for(c.controller('Job').action_for('overview'), [project.name, jobset.name, job])
         title = "Overview" %]
       [% INCLUDE menuItem
-        uri = c.uri_for(c.controller('Job').action_for('all'), [project.name, jobset.name, job.name])
+        uri = c.uri_for(c.controller('Job').action_for('all'), [project.name, jobset.name, job])
         title = "Latest builds" %]
-      [% INCLUDE menuItem uri = c.uri_for('/job' project.name jobset.name job.name 'channel' 'latest') title = "Channel" %]
+      [% INCLUDE menuItem uri = c.uri_for('/job' project.name jobset.name job 'channel' 'latest') title = "Channel" %]
     [% END %]
   [% END %]
 
@@ -134,6 +134,10 @@
       [% IF c.config.enable_google_login %]
         <div style="display: none" class="g-signin2" data-onsuccess="onGoogleSignIn" data-theme="dark"></div></a>
         <li><a href="#" id="google-signin">Sign in with Google</a></li>
+        <li class="divider"></li>
+      [% END %]
+      [% IF c.config.github_client_id %]
+        <li><a href="/github-redirect?after=[% c.req.path %]">Sign in with GitHub</a></li>
         <li class="divider"></li>
       [% END %]
       <li>

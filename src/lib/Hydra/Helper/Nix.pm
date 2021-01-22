@@ -14,7 +14,7 @@ use IPC::Run;
 
 our @ISA = qw(Exporter);
 our @EXPORT = qw(
-    getHydraHome getHydraConfig getBaseUrl txn_do
+    getHydraHome getHydraConfig getBaseUrl
     getSCMCacheDir
     registerRoot getGCRootsDir gcRootFor
     jobsetOverview jobsetOverview_
@@ -61,22 +61,6 @@ sub getBaseUrl {
 }
 
 
-# Awful hack to handle timeouts in SQLite: just retry the transaction.
-# DBD::SQLite *has* a 30 second retry window, but apparently it
-# doesn't work.
-sub txn_do {
-    my ($db, $coderef) = @_;
-    my $res;
-    while (1) {
-        eval {
-            $res = $db->txn_do($coderef);
-        };
-        return $res if !$@;
-        die $@ unless $@ =~ "database is locked";
-    }
-}
-
-
 sub getSCMCacheDir {
     return Hydra::Model::DB::getHydraPath . "/scm" ;
 }
@@ -106,27 +90,6 @@ sub registerRoot {
     return if -e $link;
     open ROOT, ">$link" or die "cannot create GC root `$link' to `$path'";
     close ROOT;
-}
-
-
-sub attrsToSQL {
-    my ($attrs, $id) = @_;
-    my @attrs = split / /, $attrs;
-
-    my $query = "1 = 1";
-
-    foreach my $attr (@attrs) {
-        $attr =~ /^([\w-]+)=([\w-]*)$/ or die "invalid attribute in view: $attr";
-        my $name = $1;
-        my $value = $2;
-        # !!! Yes, this is horribly injection-prone... (though
-        # name/value are filtered above).  Should use SQL::Abstract,
-        # but it can't deal with subqueries.  At least we should use
-        # placeholders.
-        $query .= " and exists (select 1 from buildinputs where build = $id and name = '$name' and value = '$value')";
-    }
-
-    return $query;
 }
 
 
@@ -372,14 +335,13 @@ sub captureStdoutStderr {
         alarm $timeout;
         IPC::Run::run(\@cmd, \$stdin, \$stdout, \$stderr);
         alarm 0;
-    };
-
-    if ($@) {
+        1;
+    } or do {
         die unless $@ eq "timeout\n"; # propagate unexpected errors
         return (-1, $stdout, ($stderr // "") . "timeout\n");
-    } else {
-        return ($?, $stdout, $stderr);
-    }
+    };
+
+    return ($?, $stdout, $stderr);
 }
 
 
@@ -407,16 +369,15 @@ sub run {
                 }
             });
         alarm 0;
-    };
+        $res->{status} = $?;
+        chomp $res->{stdout} if $args{chomp} // 0;
 
-    if ($@) {
+        1;
+    } or do {
         die unless $@ eq "timeout\n"; # propagate unexpected errors
         $res->{status} = -1;
         $res->{stderr} = "timeout\n";
-    } else {
-        $res->{status} = $?;
-        chomp $res->{stdout} if $args{chomp} // 0;
-    }
+    };
 
     return $res;
 }
@@ -446,7 +407,7 @@ sub getTotalShares {
 
 sub cancelBuilds($$) {
     my ($db, $builds) = @_;
-    return txn_do($db, sub {
+    return $db->txn_do(sub {
         $builds = $builds->search({ finished => 0 });
         my $n = $builds->count;
         my $time = time();
@@ -473,7 +434,7 @@ sub restartBuilds($$) {
 
     my $nrRestarted = 0;
 
-    txn_do($db, sub {
+    $db->txn_do(sub {
         # Reset the stats for the evals to which the builds belongs.
         # !!! Should do this in a trigger.
         $db->resultset('JobsetEvals')->search(

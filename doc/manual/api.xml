@@ -66,7 +66,6 @@ Content-Type: application/json
   {
     "displayname": "Acoda",
     "name": "acoda",
-    "releases": [],
     "description": "Acoda is a tool set for automatic data migration along an evolving data model",
     "enabled": 0,
     "owner": "sander",
@@ -78,7 +77,6 @@ Content-Type: application/json
   {
     "displayname": "cabal2nix",
     "name": "cabal2nix",
-    "releases": [],
     "description": "Convert Cabal files into Nix build instructions",
     "enabled": 0,
     "owner": "simons@cryp.to",
@@ -129,8 +127,7 @@ Content-Type: application/json
   ],
   "name": "hydra",
   "enabled": 1,
-  "owner": "eelco",
-  "releases": []
+  "owner": "eelco"
 }
 </programlisting>
 
@@ -314,7 +311,6 @@ Content-Type: application/json
   "buildproducts": {
     "1": {
       "path": "/nix/store/lzrxkjc35mhp8w7r8h82g0ljyizfchma-vm-test-run-unnamed",
-      "sha1hash": null,
       "defaultpath": "log.html",
       "type": "report",
       "sha256hash": null,
