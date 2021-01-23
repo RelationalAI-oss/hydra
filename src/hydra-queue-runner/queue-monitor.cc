@@ -43,7 +43,7 @@ void State::queueMonitorLoop()
         /* Sleep until we get notification from the database about an
            event. */
         if (done) {
-            conn->await_notification(5*60, 0);
+            conn->await_notification();
             nrQueueWakeups++;
         } else
             conn->get_notifs();
