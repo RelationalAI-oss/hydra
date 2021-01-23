@@ -24,9 +24,9 @@
       "locked": {
         "lastModified": 1609520816,
         "narHash": "sha256-IGO7tfJXsv9u2wpW76VCzOsHYapRZqH9pHGVsoffPrI=",
-        "owner": "NixOS",
+        "owner": "RelationalAI-oss",
         "repo": "nix",
-        "rev": "8a2ce0f455da32bc20978e68c0aad9efb4560abc",
+        "rev": "31c7abeb2ba0da14b84b970d03c6b99876e30936",
         "type": "github"
       },
       "original": {
