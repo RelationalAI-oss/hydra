@@ -93,11 +93,10 @@ BuildOutput getBuildOutput(
             if (file == narMembers.end()) continue;
 
             product.name = product.path == store->printStorePath(output) ? "" : baseNameOf(product.path);
-
             if (file->second.type == FSAccessor::Type::tRegular) {
                 product.isRegular = true;
                 product.fileSize = file->second.fileSize.value();
-                product.sha256hash = file->second.sha256.value();
+                product.sha256hash = product.fileSize == 0 ? Hash::parseAny("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", htSHA256) : file->second.sha256.value();
             }
 
             res.products.push_back(product);
