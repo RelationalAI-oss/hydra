@@ -27,8 +27,8 @@ sub login_POST {
     my $username = $c->stash->{params}->{username} // "";
     my $password = $c->stash->{params}->{password} // "";
 
-    error($c, "You must specify a user name.") if $username eq "";
-    error($c, "You must specify a password.") if $password eq "";
+    badRequest($c, "You must specify a user name.") if $username eq "";
+    badRequest($c, "You must specify a password.") if $password eq "";
 
     if ($c->get_auth_realm('ldap') && $c->authenticate({username => $username, password => $password}, 'ldap')) {
         doLDAPLogin($self, $c, $username);
@@ -37,7 +37,11 @@ sub login_POST {
         accessDenied($c, "Bad username or password.")
     }
 
-    currentUser_GET($self, $c);
+    $self->status_found(
+        $c,
+        location => $c->uri_for("current-user"),
+        entity => $c->model("DB::Users")->find($c->user->username)
+    );
 }
 
 
@@ -229,12 +233,6 @@ sub isValidPassword {
 }
 
 
-sub setPassword {
-    my ($user, $password) = @_;
-    $user->update({ password => sha1_hex($password) });
-}
-
-
 sub register :Local Args(0) {
     my ($self, $c) = @_;
 
@@ -294,7 +292,7 @@ sub updatePreferences {
         error($c, "The passwords you specified did not match.")
             if $password ne trim $c->stash->{params}->{password2};
 
-        setPassword($user, $password);
+        $user->setPassword($password);
     }
 
     my $emailAddress = trim($c->stash->{params}->{emailaddress} // "");
@@ -394,7 +392,7 @@ sub reset_password :Chained('user') :PathPart('reset-password') :Args(0) {
         unless $user->emailaddress;
 
     my $password = Crypt::RandPasswd->word(8,10);
-    setPassword($user, $password);
+    $user->setPassword($password);
     sendEmail(
         $c->config,
         $user->emailaddress,

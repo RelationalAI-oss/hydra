@@ -33,6 +33,10 @@ my $plugins = [Hydra::Plugin->instantiate(db => $db, config => $config)];
 
 my $dryRun = defined $ENV{'HYDRA_DRY_RUN'};
 
+my $statsdConfig = Hydra::Helper::Nix::getStatsdConfig($config);
+$Net::Statsd::HOST = $statsdConfig->{'host'};
+$Net::Statsd::PORT = $statsdConfig->{'port'};
+
 alarm 3600; # FIXME: make configurable
 
 
@@ -191,8 +195,11 @@ sub fetchInputEval {
         $eval = getLatestFinishedEval($jobset);
         die "jobset ‘$value’ does not have a finished evaluation\n" unless defined $eval;
     } elsif ($value =~ /^($projectNameRE):($jobsetNameRE):($jobNameRE)$/) {
+        my $jobset = $db->resultset('Jobsets')->find({ project => $1, name => $2 });
+        die "jobset ‘$1:$2’ does not exist\n" unless defined $jobset;
+
         $eval = $db->resultset('JobsetEvals')->find(
-            { project => $1, jobset => $2, hasnewbuilds => 1 },
+            { jobset_id => $jobset->id, hasnewbuilds => 1 },
             { order_by => "id DESC", rows => 1
             , where =>
                 \ [ # All builds in this jobset should be finished...
@@ -460,8 +467,6 @@ sub checkBuild {
             , nixname => $buildInfo->{nixName}
             , drvpath => $drvPath
             , system => $buildInfo->{system}
-            , nixexprinput => $jobset->nixexprinput
-            , nixexprpath => $jobset->nixexprpath
             , priority => $buildInfo->{schedulingPriority}
             , finished => 0
             , iscurrent => 1
@@ -560,7 +565,7 @@ sub checkJobsetWrapped {
     if ($jobsetsJobset) {
         my @declInputs = fetchInput($plugins, $db, $project, $jobset, "decl", $project->decltype, $project->declvalue, 0);
         my $declInput = @declInputs[0] or die "cannot find the input containing the declarative project specification\n";
-        die "multiple alternatives for the input containing the declarative project specificaiton are not supported\n"
+        die "multiple alternatives for the input containing the declarative project specification are not supported\n"
             if scalar @declInputs != 1;
         my $declFile = $declInput->{storePath} . "/" . $project->declfile;
         my $declText = read_file($declFile)
@@ -594,6 +599,8 @@ sub checkJobsetWrapped {
                 updateDeclarativeJobset($db, $project, ".jobsets", $declSpec);
                 $jobset->discard_changes;
                 $inputInfo->{"declInput"} = [ $declInput ];
+                $inputInfo->{"projectName"} = [ fetchInput($plugins, $db, $project, $jobset, "", "string", $project->name, 0) ];
+
             }
         } else {
             die "Declarative specification file $declFile is not a dictionary"
@@ -692,6 +699,12 @@ sub checkJobsetWrapped {
     }
     setJobsetError($jobset, $evaluationErrorMsg, $evaluationErrorTime);
 
+    my $evaluationErrorRecord = $db->resultset('EvaluationErrors')->create(
+        { errormsg => $evaluationErrorMsg
+        , errortime => $evaluationErrorTime
+        }
+    );
+
     my %buildMap;
     $db->txn_do(sub {
 
@@ -714,16 +727,18 @@ sub checkJobsetWrapped {
             (scalar(grep { $_->{new} } values(%buildMap)) > 0)
             || (defined $prevEval && $prevEval->jobsetevalmembers->count != scalar(keys %buildMap));
 
+
         my $ev = $jobset->jobsetevals->create(
             { hash => $argsHash
+            , evaluationerror => $evaluationErrorRecord
             , timestamp => time
             , checkouttime => abs(int($checkoutStop - $checkoutStart))
-            , errormsg => $evaluationErrorMsg
-            , errortime => $evaluationErrorTime
             , evaltime => abs(int($evalStop - $evalStart))
             , hasnewbuilds => $jobsetChanged ? 1 : 0
             , nrbuilds => $jobsetChanged ? scalar(keys %buildMap) : undef
             , flake => $flakeRef
+            , nixexprinput => $jobset->nixexprinput
+            , nixexprpath => $jobset->nixexprpath
             });
 
         $db->storage->dbh->do("notify eval_added, ?", undef,

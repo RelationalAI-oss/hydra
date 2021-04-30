@@ -1,3 +1,14 @@
+-- Making a database change:
+--
+-- 1. Update this schema document to match what the end result should be.
+--
+-- 2. Run `make -C src/sql update-dbix hydra-postgresql.sql` in the root
+--    of the project directory, and git add / git commit the changed,
+--    generated files.
+--
+-- 3. Create a migration in this same directory, named `upgrade-N.sql`
+--
+
 -- Singleton table to keep track of the schema version.
 create table SchemaVersion (
     version       integer not null
@@ -73,9 +84,14 @@ create table Jobsets (
     startTime     integer, -- if jobset is currently running
     type          integer not null default 0, -- 0 == legacy, 1 == flake
     flake         text,
-    check (schedulingShares > 0),
-    check ((type = 0) = (nixExprInput is not null and nixExprPath is not null)),
-    check ((type = 1) = (flake is not null)),
+    constraint jobsets_schedulingshares_nonzero_check check (schedulingShares > 0),
+    constraint jobsets_type_known_check   check (type = 0 or type = 1),
+    -- If the type is 0, then nixExprInput and nixExprPath should be non-null and other type-specific fields should be null
+    -- Otherwise the check passes
+    constraint jobsets_legacy_paths_check check ((type = 0) = (nixExprInput is not null and nixExprPath is not null and flake is     null)),
+    -- If the type is 1, then flake should be non-null and other type-specific fields should be null
+    -- Otherwise the check passes
+    constraint jobsets_flake_paths_check  check ((type = 1) = (nixExprInput is     null and nixExprPath is     null and flake is not null)),
     primary key   (project, name),
     foreign key   (project) references Projects(name) on delete cascade on update cascade,
     constraint    Jobsets_id_unique UNIQUE(id)
@@ -161,13 +177,6 @@ create table Builds (
 
     isChannel     integer not null default 0, -- meta.isHydraChannel
     isCurrent     integer default 0,
-
-    -- Copy of the nixExprInput/nixExprPath fields of the jobset that
-    -- instantiated this build.  Needed if we want to reproduce this
-    -- build.  FIXME: this should be stored in JobsetEvals, storing it
-    -- here is denormal.
-    nixExprInput  text,
-    nixExprPath   text,
 
     -- Priority within a jobset, set via meta.schedulingPriority.
     priority      integer not null default 0,
@@ -433,15 +442,17 @@ create table SystemTypes (
     maxConcurrent integer not null default 2
 );
 
+create table EvaluationErrors (
+    id            serial primary key not null,
+    errorMsg      text,    -- error output from the evaluator
+    errorTime     integer  -- timestamp associated with errorMsg
+);
 
 create table JobsetEvals (
     id            serial primary key not null,
+    jobset_id     integer not null,
 
-    project       text not null,
-    jobset        text not null,
-
-    errorMsg      text, -- error output from the evaluator
-    errorTime     integer, -- timestamp associated with errorMsg
+    evaluationerror_id integer,
 
     timestamp     integer not null, -- when this entry was added
     checkoutTime  integer not null, -- how long obtaining the inputs took (in seconds)
@@ -466,9 +477,11 @@ create table JobsetEvals (
     nrSucceeded   integer, -- set lazily when all builds are finished
 
     flake         text, -- immutable flake reference
+    nixExprInput  text, -- name of the jobsetInput containing the Nix or Guix expression
+    nixExprPath   text, -- relative path of the Nix or Guix expression
 
-    foreign key   (project) references Projects(name) on delete cascade on update cascade,
-    foreign key   (project, jobset) references Jobsets(project, name) on delete cascade on update cascade
+    foreign key   (jobset_id) references Jobsets(id) on delete cascade,
+    foreign key   (evaluationerror_id) references EvaluationErrors(id) on delete set null
 );
 
 
@@ -623,7 +636,8 @@ create index IndexBuildOutputsPath on BuildOutputs using hash(path);
 create index IndexBuildsOnKeep on Builds(keep) where keep = 1;
 
 -- To get the most recent eval for a jobset.
-create index IndexJobsetEvalsOnJobsetId on JobsetEvals(project, jobset, id desc) where hasNewBuilds = 1;
+create index IndexJobsetEvalsOnJobsetId on JobsetEvals(jobset_id, id desc) where hasNewBuilds = 1;
+create index IndexJobsetIdEvals on JobsetEvals(jobset_id) where hasNewBuilds = 1;
 
 create index IndexBuildsOnNotificationPendingSince on Builds(notificationPendingSince) where notificationPendingSince is not null;
 

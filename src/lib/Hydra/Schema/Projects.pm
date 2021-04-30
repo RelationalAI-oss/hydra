@@ -157,21 +157,6 @@ __PACKAGE__->has_many(
   undef,
 );
 
-=head2 jobsetevals
-
-Type: has_many
-
-Related object: L<Hydra::Schema::JobsetEvals>
-
-=cut
-
-__PACKAGE__->has_many(
-  "jobsetevals",
-  "Hydra::Schema::JobsetEvals",
-  { "foreign.project" => "self.name" },
-  undef,
-);
-
 =head2 jobsetrenames
 
 Type: has_many
@@ -258,17 +243,20 @@ Composing rels: L</projectmembers> -> username
 __PACKAGE__->many_to_many("usernames", "projectmembers", "username");
 
 
-# Created by DBIx::Class::Schema::Loader v0.07049 @ 2020-05-27 17:40:41
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:iBGJjFWiI9Wy9zwT7xGOEA
+# Created by DBIx::Class::Schema::Loader v0.07049 @ 2021-01-25 14:38:14
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:+4yWd9UjCyxxLZYDrVUAxA
 
 my %hint = (
-    columns => [
+    string_columns => [
         "name",
         "displayname",
         "description",
-        "enabled",
-        "hidden",
+        "homepage",
         "owner"
+    ],
+    boolean_columns => [
+      "enabled",
+      "hidden"
     ],
     relations => {
         jobsets => "name"

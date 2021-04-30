@@ -97,7 +97,7 @@ void State::parseMachines(const std::string & contents)
         machine->systemTypes = tokenizeString<StringSet>(tokens[1], ",");
         machine->sshKey = tokens[2] == "-" ? string("") : tokens[2];
         if (tokens[3] != "")
-            string2Int(tokens[3], machine->maxJobs);
+            machine->maxJobs = string2Int<decltype(machine->maxJobs)>(tokens[3]).value();
         else
             machine->maxJobs = 1;
         machine->speedFactor = atof(tokens[4].c_str());
@@ -156,7 +156,8 @@ void State::monitorMachinesFile()
     if (machinesFiles.empty()) {
         parseMachines("localhost " +
             (settings.thisSystem == "x86_64-linux" ? "x86_64-linux,i686-linux" : settings.thisSystem.get())
-            + " - " + std::to_string(settings.maxBuildJobs) + " 1");
+            + " - " + std::to_string(settings.maxBuildJobs) + " 1 "
+            + concatStringsSep(",", settings.systemFeatures.get()));
         return;
     }
 
@@ -862,7 +863,9 @@ int main(int argc, char * * argv)
             else if (*arg == "--status")
                 status = true;
             else if (*arg == "--build-one") {
-                if (!string2Int<BuildID>(getArg(*arg, arg, end), buildOne))
+                if (auto b = string2Int<BuildID>(getArg(*arg, arg, end)))
+                    buildOne = *b;
+                else
                     throw Error("‘--build-one’ requires a build ID");
             } else
                 return false;

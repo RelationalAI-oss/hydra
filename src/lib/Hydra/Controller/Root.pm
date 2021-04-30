@@ -7,12 +7,12 @@ use base 'Hydra::Base::Controller::ListBuilds';
 use Hydra::Helper::Nix;
 use Hydra::Helper::CatalystUtils;
 use Hydra::View::TT;
-use Digest::SHA1 qw(sha1_hex);
 use Nix::Store;
 use Nix::Config;
 use Encode;
 use File::Basename;
 use JSON;
+use List::Util qw[min max];
 use List::MoreUtils qw{any};
 use Net::Prometheus;
 
@@ -75,8 +75,8 @@ sub begin :Private {
 
     # XSRF protection: require POST requests to have the same origin.
     if ($c->req->method eq "POST" && $c->req->path ne "api/push-github") {
-        my $referer = $c->req->header('Origin');
-        $referer //= $c->req->header('Referer');
+        my $referer = $c->req->header('Referer');
+        $referer //= $c->req->header('Origin');
         my $base = $c->req->base;
         die unless $base =~ /\/$/;
         $referer .= "/";
@@ -103,7 +103,7 @@ sub deserialize :ActionClass('Deserialize') { }
 sub index :Path :Args(0) {
     my ($self, $c) = @_;
     $c->stash->{template} = 'overview.tt';
-    $c->stash->{projects} = [$c->model('DB::Projects')->search({}, {order_by => 'name'})];
+    $c->stash->{projects} = [$c->model('DB::Projects')->search({}, {order_by => ['enabled DESC', 'name']})];
     $c->stash->{newsItems} = [$c->model('DB::NewsItems')->search({}, { order_by => ['createtime DESC'], rows => 5 })];
     $self->status_ok($c,
         entity => $c->stash->{projects}
@@ -438,57 +438,56 @@ sub search :Local Args(0) {
     error($c, "Invalid character in query.")
         unless $query =~ /^[a-zA-Z0-9_\-\/.]+$/;
 
-    my $limit = trim $c->request->params->{"limit"};
-    if ($limit eq "") {
-        $c->stash->{limit} = 500;
-    } else {
-        $c->stash->{limit} = $limit;
-    }
+    my $limit = int(trim ($c->request->params->{"limit"} || "10"));
+    $c->stash->{limit} = min(50, max(1, $limit));
 
-    $c->stash->{projects} = [ $c->model('DB::Projects')->search(
-        { -and =>
-            [ { -or => [ name => { ilike => "%$query%" }, displayName => { ilike => "%$query%" }, description => { ilike => "%$query%" } ] }
-            , { hidden => 0 }
-            ]
-        },
-        { order_by => ["name"] } ) ];
+    $c->model('DB')->schema->txn_do(sub {
+        $c->model('DB')->schema->storage->dbh->do("SET LOCAL statement_timeout = 20000");
+        $c->stash->{projects} = [ $c->model('DB::Projects')->search(
+            { -and =>
+                [ { -or => [ name => { ilike => "%$query%" }, displayName => { ilike => "%$query%" }, description => { ilike => "%$query%" } ] }
+                , { hidden => 0 }
+                ]
+            },
+            { order_by => ["name"] } ) ];
 
-    $c->stash->{jobsets} = [ $c->model('DB::Jobsets')->search(
-        { -and =>
-            [ { -or => [ "me.name" => { ilike => "%$query%" }, "me.description" => { ilike => "%$query%" } ] }
-            , { "project.hidden" => 0, "me.hidden" => 0 }
-            ]
-        },
-        { order_by => ["project", "name"], join => ["project"] } ) ];
+        $c->stash->{jobsets} = [ $c->model('DB::Jobsets')->search(
+            { -and =>
+                [ { -or => [ "me.name" => { ilike => "%$query%" }, "me.description" => { ilike => "%$query%" } ] }
+                , { "project.hidden" => 0, "me.hidden" => 0 }
+                ]
+            },
+            { order_by => ["project", "name"], join => ["project"] } ) ];
 
-    $c->stash->{jobs} = [ $c->model('DB::Builds')->search(
-        { "job" => { ilike => "%$query%" }
-        , "project.hidden" => 0
-        , "jobset.hidden" => 0
-        , iscurrent => 1
-        },
-        { order_by => ["project", "jobset", "job"], join => ["project", "jobset"]
-        , rows => $c->stash->{limit} + 1
-        } )
-    ];
+        $c->stash->{jobs} = [ $c->model('DB::Builds')->search(
+            { "job" => { ilike => "%$query%" }
+            , "project.hidden" => 0
+            , "jobset.hidden" => 0
+            , iscurrent => 1
+            },
+            { order_by => ["project", "jobset", "job"], join => ["project", "jobset"]
+            , rows => $c->stash->{limit} + 1
+            } )
+        ];
 
-    # Perform build search in separate queries to prevent seq scan on buildoutputs table.
-    $c->stash->{builds} = [ $c->model('DB::Builds')->search(
-        { "buildoutputs.path" => { ilike => "%$query%" } },
-        { order_by => ["id desc"], join => ["buildoutputs"]
-        , rows => $c->stash->{limit}
-        } ) ];
+        # Perform build search in separate queries to prevent seq scan on buildoutputs table.
+        $c->stash->{builds} = [ $c->model('DB::Builds')->search(
+            { "buildoutputs.path" => { ilike => "%$query%" } },
+            { order_by => ["id desc"], join => ["buildoutputs"]
+            , rows => $c->stash->{limit}
+            } ) ];
 
-    $c->stash->{buildsdrv} = [ $c->model('DB::Builds')->search(
-        { "drvpath" => { ilike => "%$query%" } },
-        { order_by => ["id desc"]
-        , rows => $c->stash->{limit}
-        } ) ];
+        $c->stash->{buildsdrv} = [ $c->model('DB::Builds')->search(
+            { "drvpath" => { ilike => "%$query%" } },
+            { order_by => ["id desc"]
+            , rows => $c->stash->{limit}
+            } ) ];
 
-    $c->stash->{resource} = { projects => $c->stash->{projects},
-                              jobsets  => $c->stash->{jobsets},
-                              builds  => $c->stash->{builds},
-                              buildsdrv  => $c->stash->{buildsdrv} };
+        $c->stash->{resource} = { projects => $c->stash->{projects},
+                                jobsets  => $c->stash->{jobsets},
+                                builds  => $c->stash->{builds},
+                                buildsdrv  => $c->stash->{buildsdrv} };
+    });
 }
 
 sub serveLogFile {
