@@ -530,34 +530,6 @@ END;
       <div class="modal-footer">
         <a href="#" class="btn btn-primary" data-dismiss="modal">Close</a>
       </div>
-      <script>
-        var BASE_URL = "https://app.datadoghq.com/dash/host_name/";
-        $(function() {
-          var build_deps = $("#tabs-buildsteps > table > tbody > tr > td:nth-child(4)")[0];
-          if (build_deps === undefined) {
-              // Nothing to do here
-              return
-          } else {
-              // Get the machine name;
-              machine = build_deps.firstChild.textContent;
-              // Stop if the machine isn't on hetzner
-              if (!machine.startsWith("hetzner")) return;
-              step_status = $("#tabs-buildsteps > table > tbody > tr > td.step-status > strong").first().text()
-              machine_el = $("#tabs-buildsteps > table > tbody > tr > td:nth-child(4)");
-              if (step_status == "Building"){
-                // We're still building, use live feed
-                var href = BASE_URL + machine + "?live=true";
-                machine_el.replaceWith('<td><a href="'+href+'">'+machine+'</a></td>');
-              }
-              else {
-                // Get the time at which the build finished
-                var finished_at = $("time.date").first().data("timestamp") * 1000;
-                var href = BASE_URL + machine + "?from_ts=" + (finished_at - (3600000 * 3)) + "&to_ts="+finished_at+ "&live=false";
-                machine_el.replaceWith('<td><a href="'+href+'">'+machine+'</a></td>');
-              };
-          }
-        });
-      </script>
     </div>
   </div>
 </div>
