@@ -60,7 +60,7 @@ END;
               INCLUDE renderMachineName machine=step.machine; ELSE; "<em>n/a</em>"; END %]
               [% IF step.machine.search('hetzner') %]
                 Metrics: 
-                <a href="https://app.datadoghq.com/dash/host_name/[% stripSSHUser(step.machine) %]?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step.stoptime}000&live=false": '&live=true' %]">host</a> | <a href="https://app.datadoghq.com/dashboard/888-jbk-upn?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step    .stoptime}000&live=false": '&live=true' %]&tpl_var_host=[% stripSSHUser(step.machine)' %]">rai</a>
+                <a href="https://app.datadoghq.com/dash/host_name/[% stripSSHUser(step.machine) %]?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step.stoptime}000&live=false": '&live=true' %]">host</a> | <a href="https://app.datadoghq.com/dashboard/888-jbk-upn?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step.stoptime}000&live=false": '&live=true' %]&tpl_var_host=[% stripSSHUser(step.machine) %]">rai</a>
               [% END %]
             </td>
             <td class="step-status">
