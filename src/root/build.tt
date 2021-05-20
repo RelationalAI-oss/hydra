@@ -56,12 +56,12 @@ END;
                  END %]
             </td>
             <td>
-              [% IF step.machine.search('hetzner') %]
-                <a href="https://app.datadoghq.com/dash/host_name/[% stripSSHUser(step.machine) %]?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step.stoptime}000&live=false": '&live=true' %]">
-              [% END %]
               [% IF step.busy != 0 || ((step.machine || step.starttime) && (step.status == 0 || step.status == 1 || step.status == 3 || step.status == 4 || step.status == 7));
               INCLUDE renderMachineName machine=step.machine; ELSE; "<em>n/a</em>"; END %]
-              [% step.machine.search('hetzner') ? '</a>' : '' %]
+              [% IF step.machine.search('hetzner') %]
+                Metrics: 
+                <a href="https://app.datadoghq.com/dash/host_name/[% stripSSHUser(step.machine) %]?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step.stoptime}000&live=false": '&live=true' %]">host</a> | <a href="https://app.datadoghq.com/dashboard/888-jbk-upn?from_ts=[% step.starttime*1000 %][% step.stoptime > 0 ? "&to_ts=${step    .stoptime}000&live=false": '&live=true' %]&tpl_var_host=[% stripSSHUser(step.machine) %]' %]">rai</a>
+              [% END %]
             </td>
             <td class="step-status">
               [% IF step.busy != 0 %]
