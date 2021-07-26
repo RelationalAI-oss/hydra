@@ -189,7 +189,7 @@ sub metric : Chained('job') PathPart('metric') Args(1) {
     $c->stash->{metricName} = $metricName;
 
     my @res = $c->stash->{jobset}->buildmetrics->search(
-        { job => $c->stash->{job}, name => $metricName },
+        { job => $c->stash->{job}, name => $metricName, value => { '!=', 'NaN'} },
         { order_by => "timestamp", columns => [ "build", "name", "timestamp", "value", "unit" ] });
 
     $self->status_ok($c, entity => [ map { { id => $_->get_column("build"), timestamp => $_ ->timestamp, value => $_->value, unit => $_->unit } } @res ]);
