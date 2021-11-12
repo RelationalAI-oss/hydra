@@ -51,7 +51,6 @@ sub buildFinished {
 
         my $jobFilter = $conf->{job} // "*:*:*";
         my $command = $conf->{command} // die "<runcommand> section lacks a 'command' option";
-        print STDERR "RunCommand_Debug $jobFilter";
 
         next unless configSectionMatches(
             $jobFilter,
@@ -59,7 +58,7 @@ sub buildFinished {
             $build->get_column('jobset'),
             $build->get_column('job'));
 
-        print STDERR "RunCommand_Debug $jobFilter (MATCHED): $command";
+        print STDERR "RunCommand_Debug $jobFilter: $command\n";
 
         unless (defined $tmp) {
             $tmp = File::Temp->new(SUFFIX => '.json');
