@@ -48,13 +48,18 @@ sub buildFinished {
 
     foreach my $conf (@config) {
         next unless eventMatches($conf, $event);
+
+        my $jobFilter = $conf->{job} // "*:*:*";
+        my $command = $conf->{command} // die "<runcommand> section lacks a 'command' option";
+        print STDERR "RunCommand_Debug $jobFilter";
+
         next unless configSectionMatches(
-            $conf->{job} // "*:*:*",
+            $jobFilter,
             $build->get_column('project'),
             $build->get_column('jobset'),
             $build->get_column('job'));
 
-        my $command = $conf->{command} // die "<runcommand> section lacks a 'command' option";
+        print STDERR "RunCommand_Debug $jobFilter (MATCHED): $command";
 
         unless (defined $tmp) {
             $tmp = File::Temp->new(SUFFIX => '.json');
