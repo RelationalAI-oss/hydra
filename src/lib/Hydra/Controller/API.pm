@@ -7,12 +7,10 @@ use base 'Hydra::Base::Controller::REST';
 use Hydra::Helper::Nix;
 use Hydra::Helper::CatalystUtils;
 use Hydra::Controller::Project;
-use JSON;
-use JSON::Any;
+use JSON::MaybeXS;
 use DateTime;
 use Digest::SHA qw(sha256_hex);
 use Text::Diff;
-use File::Slurp;
 use IPC::Run qw(run);
 
 
@@ -67,7 +65,7 @@ sub latestbuilds : Chained('api') PathPart('latestbuilds') Args(0) {
     push @list, buildToHash($_) foreach @latest;
 
     $c->stash->{'plain'} = {
-        data => scalar (JSON::Any->objToJson(\@list))
+        data => scalar (encode_json(\@list))
     };
     $c->forward('Hydra::View::Plain');
 }
@@ -88,7 +86,7 @@ sub jobsetToHash {
         triggertime => $jobset->triggertime,
         fetcherrormsg => $jobset->fetcherrormsg,
         errortime => $jobset->errortime,
-        haserrormsg => defined($jobset->errormsg) && $jobset->errormsg ne "" ? JSON::true : JSON::false
+        haserrormsg => defined($jobset->errormsg) && $jobset->errormsg ne "" ? JSON::MaybeXS::true : JSON::MaybeXS::false
     };
 }
 
@@ -108,7 +106,7 @@ sub jobsets : Chained('api') PathPart('jobsets') Args(0) {
     push @list, jobsetToHash($_) foreach @jobsets;
 
     $c->stash->{'plain'} = {
-        data => scalar (JSON::Any->objToJson(\@list))
+        data => scalar (encode_json(\@list))
     };
     $c->forward('Hydra::View::Plain');
 }
@@ -126,7 +124,7 @@ sub queue : Chained('api') PathPart('queue') Args(0) {
     push @list, buildToHash($_) foreach @builds;
 
     $c->stash->{'plain'} = {
-        data => scalar (JSON::Any->objToJson(\@list))
+        data => scalar (encode_json(\@list))
     };
     $c->forward('Hydra::View::Plain');
 }
@@ -170,7 +168,7 @@ sub nrbuilds : Chained('api') PathPart('nrbuilds') Args(0) {
     @arr = reverse(@arr);
 
     $c->stash->{'plain'} = {
-        data => scalar (JSON::Any->objToJson(\@arr))
+        data => scalar (encode_json(\@arr))
     };
     $c->forward('Hydra::View::Plain');
 }

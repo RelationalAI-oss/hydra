@@ -1,12 +1,13 @@
 #! /usr/bin/env perl
 
 use strict;
+use warnings;
 use utf8;
 use Config::General;
 use Data::Dump qw(dump);
 use Digest::SHA qw(sha256_hex);
 use Encode;
-use File::Slurp;
+use File::Slurper qw(read_text);
 use Hydra::Helper::AddBuilds;
 use Hydra::Helper::CatalystUtils;
 use Hydra::Helper::Email;
@@ -14,7 +15,7 @@ use Hydra::Helper::Nix;
 use Hydra::Model::DB;
 use Hydra::Plugin;
 use Hydra::Schema;
-use JSON;
+use JSON::MaybeXS;
 use Net::Statsd;
 use Nix::Store;
 use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
@@ -121,7 +122,8 @@ sub fetchInputBuild {
     my $versionRE = "(?:[A-Za-z0-9\.\-]+)";
 
     my $relName = ($prevBuild->releasename or $prevBuild->nixname);
-    my $version = $2 if $relName =~ /^($pkgNameRE)-($versionRE)$/;
+    my $version;
+    $version = $2 if $relName =~ /^($pkgNameRE)-($versionRE)$/;
 
     my $mainOutput = getMainOutput($prevBuild);
 
@@ -166,7 +168,8 @@ sub fetchInputSystemBuild {
         my $versionRE = "(?:[A-Za-z0-9\.\-]+)";
 
         my $relName = ($prevBuild->releasename or $prevBuild->nixname);
-        my $version = $2 if $relName =~ /^($pkgNameRE)-($versionRE)$/;
+        my $version;
+        $version = $2 if $relName =~ /^($pkgNameRE)-($versionRE)$/;
 
         my $input =
             { storePath => getMainOutput($prevBuild)->path
@@ -231,6 +234,8 @@ sub fetchInputEval {
 sub fetchInput {
     my ($plugins, $db, $project, $jobset, $name, $type, $value, $emailresponsible) = @_;
     my @inputs;
+
+    print STDERR "(" . $project->name . ":" . $jobset->name . ") Fetching input `$name` ($type) $value\n";
 
     if ($type eq "build") {
         @inputs = fetchInputBuild($db, $project, $jobset, $name, $value);
@@ -335,7 +340,9 @@ sub inputsToArgs {
 
 
 sub evalJobs {
-    my ($inputInfo, $nixExprInputName, $nixExprPath, $flakeRef) = @_;
+    my ($jobsetName, $inputInfo, $nixExprInputName, $nixExprPath, $flakeRef) = @_;
+
+    print STDERR "($jobsetName) Evaluating...\n";
 
     my @cmd;
 
@@ -426,7 +433,7 @@ sub checkBuild {
                 # semantically unnecessary (because they're implied by
                 # the eval), but they give a factor 1000 speedup on
                 # the Nixpkgs jobset with PostgreSQL.
-                { project => $jobset->get_column('project'), jobset => $jobset->name, job => $jobName,
+                { jobset_id => $jobset->get_column('id'), job => $jobName,
                   name => $firstOutputName, path => $firstOutputPath },
                 { rows => 1, columns => ['id'], join => ['buildoutputs'] });
             if (defined $prevBuild) {
@@ -479,6 +486,7 @@ sub checkBuild {
         $buildMap->{$build->id} = { id => $build->id, jobName => $jobName, new => 1, drvPath => $drvPath };
         $$jobOutPathMap{$jobName . "\t" . $firstOutputPath} = $build->id;
 
+        $db->storage->dbh->do("notify build_queued, ?", undef, $build->id);
         print STDERR "added build ${\$build->id} (${\$jobset->get_column('project')}:${\$jobset->name}:$jobName)\n";
     });
 
@@ -564,11 +572,11 @@ sub checkJobsetWrapped {
     my $inputInfo = {};
     if ($jobsetsJobset) {
         my @declInputs = fetchInput($plugins, $db, $project, $jobset, "decl", $project->decltype, $project->declvalue, 0);
-        my $declInput = @declInputs[0] or die "cannot find the input containing the declarative project specification\n";
+        my $declInput = $declInputs[0] or die "cannot find the input containing the declarative project specification\n";
         die "multiple alternatives for the input containing the declarative project specification are not supported\n"
             if scalar @declInputs != 1;
         my $declFile = $declInput->{storePath} . "/" . $project->declfile;
-        my $declText = read_file($declFile)
+        my $declText = read_text($declFile)
             or die "Couldn't read declarative specification file $declFile: $!\n";
         my $declSpec;
         eval {
@@ -599,7 +607,7 @@ sub checkJobsetWrapped {
                 updateDeclarativeJobset($db, $project, ".jobsets", $declSpec);
                 $jobset->discard_changes;
                 $inputInfo->{"declInput"} = [ $declInput ];
-                $inputInfo->{"projectName"} = [ fetchInput($plugins, $db, $project, $jobset, "", "string", $project->name, 0) ];
+                $inputInfo->{"projectName"} = [ fetchInput($plugins, $db, $project, $jobset, "projectName", "string", $project->name, 0) ];
 
             }
         } else {
@@ -641,10 +649,10 @@ sub checkJobsetWrapped {
     # Hash the arguments to hydra-eval-jobs and check the
     # JobsetInputHashes to see if the previous evaluation had the same
     # inputs.  If so, bail out.
-    my @args = ($jobset->nixexprinput, $jobset->nixexprpath, inputsToArgs($inputInfo));
+    my @args = ($jobset->nixexprinput // "", $jobset->nixexprpath // "", inputsToArgs($inputInfo));
     my $argsHash = sha256_hex("@args");
     my $prevEval = getPrevJobsetEval($db, $jobset, 0);
-    if (defined $prevEval && $prevEval->hash eq $argsHash && !$dryRun && !$jobset->forceeval && $prevEval->flake eq $flakeRef) {
+    if (defined $prevEval && $prevEval->hash eq $argsHash && !$dryRun && !$jobset->forceeval && (!defined($flakeRef) || ($prevEval->flake eq $flakeRef))) {
         print STDERR "  jobset is unchanged, skipping\n";
         Net::Statsd::increment("hydra.evaluator.unchanged_checkouts");
         $db->txn_do(sub {
@@ -656,7 +664,7 @@ sub checkJobsetWrapped {
 
     # Evaluate the job expression.
     my $evalStart = clock_gettime(CLOCK_MONOTONIC);
-    my $jobs = evalJobs($inputInfo, $jobset->nixexprinput, $jobset->nixexprpath, $flakeRef);
+    my $jobs = evalJobs($project->name . ":" . $jobset->name, $inputInfo, $jobset->nixexprinput, $jobset->nixexprpath, $flakeRef);
     my $evalStop = clock_gettime(CLOCK_MONOTONIC);
 
     if ($jobsetsJobset) {
@@ -746,7 +754,8 @@ sub checkJobsetWrapped {
 
         if ($jobsetChanged) {
             # Create JobsetEvalMembers mappings.
-            while (my ($id, $x) = each %buildMap) {
+            foreach my $id (keys %buildMap) {
+                my $x = $buildMap{$id};
                 $ev->jobsetevalmembers->create({ build => $id, isnew => $x->{new} });
             }
 
@@ -755,7 +764,8 @@ sub checkJobsetWrapped {
             # builds for the same derivation, pick the one with the
             # shortest name.
             my %drvPathToId;
-            while (my ($id, $x) = each %buildMap) {
+            foreach my $id (keys %buildMap) {
+                my $x = $buildMap{$id};
                 my $y = $drvPathToId{$x->{drvPath}};
                 if (defined $y) {
                     next if length $x->{jobName} > length $y->{jobName};
@@ -799,7 +809,8 @@ sub checkJobsetWrapped {
 
             # Wake up hydra-queue-runner.
             my $lowestId;
-            while (my ($id, $x) = each %buildMap) {
+            foreach my $id (keys %buildMap) {
+                my $x = $buildMap{$id};
                 $lowestId = $id if $x->{new} && (!defined $lowestId || $id < $lowestId);
             }
             $notifyAdded->execute($lowestId) if defined $lowestId;

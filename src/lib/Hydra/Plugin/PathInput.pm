@@ -1,6 +1,7 @@
 package Hydra::Plugin::PathInput;
 
 use strict;
+use warnings;
 use parent 'Hydra::Plugin';
 use POSIX qw(strftime);
 use Hydra::Helper::Nix;
@@ -77,7 +78,7 @@ sub fetchInput {
         { uri => $uri
         , storePath => $storePath
         , sha256hash => $sha256
-        , revision => strftime "%Y%m%d%H%M%S", gmtime($timestamp)
+        , revision => (strftime "%Y%m%d%H%M%S", gmtime($timestamp))  . ':' .  $sha256
         };
 }
 

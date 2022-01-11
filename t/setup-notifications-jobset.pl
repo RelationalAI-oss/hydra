@@ -1,5 +1,7 @@
+use strict;
+use warnings;
 use LWP::UserAgent;
-use JSON;
+use JSON::MaybeXS;
 
 my $ua = LWP::UserAgent->new;
 $ua->cookie_jar({});

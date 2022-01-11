@@ -2,8 +2,9 @@ package Hydra::Helper::CatalystUtils;
 
 use utf8;
 use strict;
+use warnings;
 use Exporter;
-use Readonly;
+use ReadonlyX;
 use Nix::Store;
 use Hydra::Helper::Nix;
 
@@ -33,7 +34,7 @@ our @EXPORT = qw(
 
 
 # Columns from the Builds table needed to render build lists.
-Readonly our @buildListColumns => ('id', 'finished', 'timestamp', 'stoptime', 'project', 'jobset', 'job', 'nixname', 'system', 'buildstatus', 'releasename');
+Readonly::Array our @buildListColumns => ('id', 'finished', 'timestamp', 'stoptime', 'project', 'jobset', 'job', 'nixname', 'system', 'buildstatus', 'releasename');
 
 
 sub getBuild {
@@ -64,8 +65,7 @@ sub getNextBuild {
     (my $nextBuild) = $c->model('DB::Builds')->search(
       { finished => 1
       , system => $build->system
-      , project => $build->get_column('project')
-      , jobset => $build->get_column('jobset')
+      , jobset_id => $build->get_column('jobset_id')
       , job => $build->get_column('job')
       , 'me.id' =>  { '>' => $build->id }
       }, {rows => 1, order_by => "me.id ASC"});
@@ -81,8 +81,7 @@ sub getPreviousSuccessfulBuild {
     (my $prevBuild) = $c->model('DB::Builds')->search(
       { finished => 1
       , system => $build->system
-      , project => $build->get_column('project')
-      , jobset => $build->get_column('jobset')
+      , jobset_id => $build->get_column('jobset_id')
       , job => $build->get_column('job')
       , buildstatus => 0
       , 'me.id' =>  { '<' => $build->id }
@@ -111,14 +110,14 @@ sub searchBuildsAndEvalsForJobset {
             { columns => ['id', 'job', 'finished', 'buildstatus'] }
         );
 
-        foreach my $b (@allBuilds) {
-            my $jobName = $b->get_column('job');
+        foreach my $build (@allBuilds) {
+            my $jobName = $build->get_column('job');
 
             $evals->{$eval->id}->{timestamp} = $eval->timestamp;
             $evals->{$eval->id}->{builds}->{$jobName} = {
-                id => $b->id,
-                finished => $b->finished,
-                buildstatus => $b->buildstatus
+                id => $build->id,
+                finished => $build->finished,
+                buildstatus => $build->buildstatus
             };
             $builds{$jobName} = 1;
             $nrBuilds++;
@@ -280,7 +279,7 @@ sub requirePost {
 
 
 sub trim {
-    my $s = shift;
+    my $s = shift // "";
     $s =~ s/^\s+|\s+$//g;
     return $s;
 }
@@ -318,16 +317,16 @@ sub paramToList {
 
 
 # Security checking of filenames.
-Readonly our $pathCompRE    => "(?:[A-Za-z0-9-\+\._\$][A-Za-z0-9-\+\._\$:]*)";
-Readonly our $relPathRE     => "(?:$pathCompRE(?:/$pathCompRE)*)";
-Readonly our $relNameRE     => "(?:[A-Za-z0-9-_][A-Za-z0-9-\._]*)";
-Readonly our $attrNameRE    => "(?:[A-Za-z_][A-Za-z0-9-_]*)";
-Readonly our $projectNameRE => "(?:[A-Za-z_][A-Za-z0-9-_]*)";
-Readonly our $jobsetNameRE  => "(?:[A-Za-z_][A-Za-z0-9-_\.]*)";
-Readonly our $jobNameRE     => "(?:$attrNameRE(?:\\.$attrNameRE)*)";
-Readonly our $systemRE      => "(?:[a-z0-9_]+-[a-z0-9_]+)";
-Readonly our $userNameRE    => "(?:[a-z][a-z0-9_\.]*)";
-Readonly our $inputNameRE   => "(?:[A-Za-z_][A-Za-z0-9-_]*)";
+Readonly::Scalar our $pathCompRE    => "(?:[A-Za-z0-9-\+\._\$][A-Za-z0-9-\+\._\$:]*)";
+Readonly::Scalar our $relPathRE     => "(?:$pathCompRE(?:/$pathCompRE)*)";
+Readonly::Scalar our $relNameRE     => "(?:[A-Za-z0-9-_][A-Za-z0-9-\._]*)";
+Readonly::Scalar our $attrNameRE    => "(?:[A-Za-z_][A-Za-z0-9-_]*)";
+Readonly::Scalar our $projectNameRE => "(?:[A-Za-z_][A-Za-z0-9-_]*)";
+Readonly::Scalar our $jobsetNameRE  => "(?:[A-Za-z_][A-Za-z0-9-_\.]*)";
+Readonly::Scalar our $jobNameRE     => "(?:$attrNameRE(?:\\.$attrNameRE)*)";
+Readonly::Scalar our $systemRE      => "(?:[a-z0-9_]+-[a-z0-9_]+)";
+Readonly::Scalar our $userNameRE    => "(?:[a-z][a-z0-9_\.]*)";
+Readonly::Scalar our $inputNameRE   => "(?:[A-Za-z_][A-Za-z0-9-_]*)";
 
 
 sub parseJobsetName {

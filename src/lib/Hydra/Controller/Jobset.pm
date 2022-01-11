@@ -41,7 +41,7 @@ sub jobset_GET {
 
     $c->stash->{template} = 'jobset.tt';
 
-    $c->stash->{evals} = getEvals($self, $c, scalar $c->stash->{jobset}->jobsetevals, 0, 10);
+    $c->stash->{evals} = getEvals($c, scalar $c->stash->{jobset}->jobsetevals, 0, 10);
 
     $c->stash->{latestEval} = $c->stash->{jobset}->jobsetevals->search({ hasnewbuilds => 1 }, { rows => 1, order_by => ["id desc"] })->single;
 
@@ -239,7 +239,7 @@ sub updateJobset {
     error($c, "Cannot rename jobset to ‘$jobsetName’ since that identifier is already taken.")
         if $jobsetName ne $oldName && defined $c->stash->{project}->jobsets->find({ name => $jobsetName });
 
-    my $type = int($c->stash->{params}->{"type"}) // 0;
+    my $type = int($c->stash->{params}->{"type"} // 0);
 
     my ($nixExprPath, $nixExprInput);
     my $flake;
@@ -270,7 +270,7 @@ sub updateJobset {
         , enableemail => defined $c->stash->{params}->{enableemail} ? 1 : 0
         , emailoverride => trim($c->stash->{params}->{emailoverride}) || ""
         , hidden => defined $c->stash->{params}->{visible} ? 0 : 1
-        , keepnr => int(trim($c->stash->{params}->{keepnr}))
+        , keepnr => int(trim($c->stash->{params}->{keepnr} // "0"))
         , checkinterval => $checkinterval
         , triggertime => ($enabled && $checkinterval > 0) ? $jobset->triggertime // time() : undef
         , schedulingshares => $shares
@@ -337,7 +337,7 @@ sub evals_GET {
     $c->stash->{resultsPerPage} = $resultsPerPage;
     $c->stash->{total} = $evals->search({hasnewbuilds => 1})->count;
     my $offset = ($page - 1) * $resultsPerPage;
-    $c->stash->{evals} = getEvals($self, $c, $evals, $offset, $resultsPerPage);
+    $c->stash->{evals} = getEvals($c, $evals, $offset, $resultsPerPage);
     my %entity = (
         evals => [ map { $_->{eval} } @{$c->stash->{evals}} ],
         first => "?page=1",

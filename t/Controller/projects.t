@@ -1,7 +1,8 @@
 use feature 'unicode_strings';
 use strict;
+use warnings;
 use Setup;
-use JSON qw(decode_json encode_json);
+use JSON::MaybeXS qw(decode_json encode_json);
 
 my %ctx = test_init();
 
@@ -44,17 +45,12 @@ subtest "Read project 'tests'" => sub {
     is(decode_json($projectinfo->content), {
         description => "",
         displayname => "Tests",
-        enabled => JSON::true,
-        hidden => JSON::false,
+        enabled => JSON::MaybeXS::true,
+        hidden => JSON::MaybeXS::false,
         homepage => "",
         jobsets => [],
         name => "tests",
-        owner => "root",
-        declarative => {
-            file => "",
-            type => "",
-            value => ""
-        }
+        owner => "root"
     });
 };
 
@@ -65,8 +61,8 @@ subtest "Transitioning from declarative project to normal" => sub {
             Content_Type => 'application/json',
             Cookie => $cookie,
             Content => encode_json({
-                enabled => JSON::true,
-                visible => JSON::true,
+                enabled => JSON::MaybeXS::true,
+                visible => JSON::MaybeXS::true,
                 name => "tests",
                 displayname => "Tests",
                 declarative => {
@@ -88,8 +84,8 @@ subtest "Transitioning from declarative project to normal" => sub {
         is(decode_json($projectinfo->content), {
             description => "",
             displayname => "Tests",
-            enabled => JSON::true,
-            hidden => JSON::false,
+            enabled => JSON::MaybeXS::true,
+            hidden => JSON::MaybeXS::false,
             homepage => "",
             jobsets => [".jobsets"],
             name => "tests",
@@ -108,8 +104,8 @@ subtest "Transitioning from declarative project to normal" => sub {
             Content_Type => 'application/json',
             Cookie => $cookie,
             Content => encode_json({
-                enabled => JSON::true,
-                visible => JSON::true,
+                enabled => JSON::MaybeXS::true,
+                visible => JSON::MaybeXS::true,
                 name => "tests",
                 displayname => "Tests",
                 declarative => {
@@ -131,17 +127,12 @@ subtest "Transitioning from declarative project to normal" => sub {
         is(decode_json($projectinfo->content), {
             description => "",
             displayname => "Tests",
-            enabled => JSON::true,
-            hidden => JSON::false,
+            enabled => JSON::MaybeXS::true,
+            hidden => JSON::MaybeXS::false,
             homepage => "",
             jobsets => [],
             name => "tests",
-            owner => "root",
-            declarative => {
-                file => "",
-                type => "",
-                value => ""
-            }
+            owner => "root"
         });
     };
 };

@@ -1,9 +1,10 @@
 use feature 'unicode_strings';
 use strict;
+use warnings;
 use Setup;
 use IO::Uncompress::Bunzip2 qw(bunzip2);
 use Archive::Tar;
-use JSON qw(decode_json);
+use JSON::MaybeXS qw(decode_json);
 use Data::Dumper;
 my %ctx = test_init(
   use_external_destination_store => 0
@@ -29,7 +30,7 @@ ok(evalSucceeds($jobset));
 is(nrQueuedBuildsForJobset($jobset), 4);
 
 for my $build (queuedBuildsForJobset($jobset)) {
-    ok(runBuild($build), "Build '".$build->job."' should exit with code 0");
+    ok(runBuild($build), "Build '".$build->job."' should exit with return code 0");
     my $newbuild = $db->resultset('Builds')->find($build->id);
     is($newbuild->finished, 1, "Build '".$build->job."' should be finished.");
     is($newbuild->buildstatus, 0, "Build '".$build->job."' should have buildstatus 0.");
