@@ -52,13 +52,14 @@ sub fanoutToCommands {
 
         my $jobFilter = $conf->{job} // "*:*:*";
         my $command = $conf->{command} // die "<runcommand> section lacks a 'command' option";
-        print STDERR "RunCommand_Debug $jobFilter: $command\n";
 
         next unless configSectionMatches(
             $matcher,
             $project,
             $jobset,
             $job);
+
+        print STDERR "RunCommand_Debug $jobFilter: $command\n";
 
         if (!defined($conf->{command})) {
             warn "<runcommand> section for '$matcher' lacks a 'command' option";
