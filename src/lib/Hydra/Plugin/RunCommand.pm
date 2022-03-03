@@ -5,6 +5,10 @@ use warnings;
 use parent 'Hydra::Plugin';
 use experimental 'smartmatch';
 use JSON::MaybeXS;
+use File::Basename qw(dirname);
+use File::Path qw(make_path);
+use IPC::Run3;
+use Try::Tiny;
 
 sub isEnabled {
     my ($self) = @_;
@@ -82,8 +86,8 @@ sub makeJsonPayload {
         build => $build->id,
         finished => $build->get_column('finished') ? JSON::MaybeXS::true : JSON::MaybeXS::false,
         timestamp => $build->get_column('timestamp'),
-        project => $build->get_column('project'),
-        jobset => $build->get_column('jobset'),
+        project => $build->project->get_column('name'),
+        jobset => $build->jobset->get_column('name'),
         job => $build->get_column('job'),
         drvPath => $build->get_column('drvpath'),
         startTime => $build->get_column('starttime'),
@@ -140,8 +144,8 @@ sub buildFinished {
     my $commandsToRun = fanoutToCommands(
         $self->{config},
         $event,
-        $build->get_column('project'),
-        $build->get_column('jobset'),
+        $build->project->get_column('name'),
+        $build->jobset->get_column('name'),
         $build->get_column('job')
     );
 
@@ -166,10 +170,31 @@ sub buildFinished {
 
         $runlog->started();
 
-        system("$command") == 0
-            or warn "notification command '$command' failed with exit status $? ($!)\n";
+        my $logPath = Hydra::Helper::Nix::constructRunCommandLogPath($runlog) or die "RunCommandLog not found.";
+        my $dir = dirname($logPath);
+        my $oldUmask = umask();
+        my $f;
 
-        $runlog->completed_with_child_error($?, $!);
+        try {
+            # file: 640, dir: 750
+            umask(0027);
+            make_path($dir);
+
+            open($f, '>', $logPath);
+            umask($oldUmask);
+
+            run3($command, \undef, $f, $f, { return_if_system_error => 1 }) == 1
+                or warn "notification command '$command' failed with exit status $? ($!)\n";
+
+            close($f);
+
+            $runlog->completed_with_child_error($?, $!);
+            1;
+        } catch {
+            die "Died while trying to process RunCommand (${\$runlog->uuid}): $_";
+        } finally {
+            umask($oldUmask);
+        };
     }
 }
 

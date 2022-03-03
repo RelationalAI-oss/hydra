@@ -6,6 +6,7 @@ use File::Path qw(make_path);
 use File::Basename;
 use Cwd qw(abs_path getcwd);
 use CliRunners;
+use Hydra::Helper::Exec;
 
 # Set up the environment for running tests.
 #
@@ -16,6 +17,9 @@ use CliRunners;
 #  * use_external_destination_store: Boolean indicating whether hydra should
 #       use a destination store different from the evaluation store.
 #       True by default.
+# * before_init: a sub which is called after the database is up, but before
+#       hydra-init is executed. It receives the HydraTestContext object as
+#       its argument.
 #
 # This clears several environment variables and sets them to ephemeral
 # values: a temporary database, temporary Nix store, temporary Hydra
@@ -63,22 +67,27 @@ sub new {
         extra_initdb_args => "--locale C.UTF-8"
     );
     $ENV{'HYDRA_DBI'} = $pgsql->dsn;
-    system("hydra-init") == 0 or die;
 
-    my $self = {
+    my $self = bless {
         _db => undef,
         db_handle => $pgsql,
         tmpdir => $dir,
+        nix_state_dir => "$dir/nix/var/nix",
         testdir => abs_path(dirname(__FILE__) . "/.."),
         jobsdir => abs_path(dirname(__FILE__) . "/../jobs")
-    };
+    }, $class;
 
-    return bless $self, $class;
+    if ($opts{'before_init'}) {
+        $opts{'before_init'}->($self);
+    }
+
+    expectOkay(5, ("hydra-init"));
+
+    return $self;
 }
 
 sub db {
     my ($self, $setup) = @_;
-
 
     if (!defined $self->{_db}) {
         require Hydra::Schema;
@@ -115,6 +124,12 @@ sub jobsdir {
     return $self->{jobsdir};
 }
 
+sub nix_state_dir {
+    my ($self) = @_;
+
+    return $self->{nix_state_dir};
+}
+
 # Create a jobset, evaluate it, and optionally build the jobs.
 #
 # In return, you get a hash of all the Builds records, keyed
@@ -125,12 +140,14 @@ sub jobsdir {
 # Hash Parameters:
 #
 #  * expression: The file in the jobsdir directory to evaluate
+#  * jobsdir: An alternative jobsdir to source the expression from
 #  * build: Bool. Attempt to build all the resulting jobs. Default: false.
 sub makeAndEvaluateJobset {
     my ($self, %opts) = @_;
 
     my $expression = $opts{'expression'} || die "Mandatory 'expression' option not passed to makeAndEValuateJobset.";
     my $should_build = $opts{'build'} // 0;
+    my $jobsdir = $opts{'jobsdir'} // $self->jobsdir;
 
 
     # Create a new user for this test
@@ -155,7 +172,7 @@ sub makeAndEvaluateJobset {
         emailoverride => ""
     });
     my $jobsetinput = $jobset->jobsetinputs->create({name => "jobs", type => "path"});
-    $jobsetinput->jobsetinputalts->create({altnr => 0, value => $self->jobsdir});
+    $jobsetinput->jobsetinputalts->create({altnr => 0, value => $jobsdir});
 
     evalSucceeds($jobset) or die "Evaluating jobs/$expression should exit with return code 0";
 

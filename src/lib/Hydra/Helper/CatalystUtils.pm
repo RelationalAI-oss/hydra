@@ -6,7 +6,6 @@ use warnings;
 use Exporter;
 use ReadonlyX;
 use Nix::Store;
-use Hydra::Helper::Nix;
 
 our @ISA = qw(Exporter);
 our @EXPORT = qw(
@@ -34,8 +33,7 @@ our @EXPORT = qw(
 
 
 # Columns from the Builds table needed to render build lists.
-Readonly::Array our @buildListColumns => ('id', 'finished', 'timestamp', 'stoptime', 'project', 'jobset', 'job', 'nixname', 'system', 'buildstatus', 'releasename');
-
+Readonly::Array our @buildListColumns => ('id', 'finished', 'timestamp', 'stoptime', 'jobset_id', 'job', 'nixname', 'system', 'buildstatus', 'releasename');
 
 sub getBuild {
     my ($c, $id) = @_;
@@ -338,7 +336,8 @@ sub parseJobsetName {
 
 sub showJobName {
     my ($build) = @_;
-    return $build->get_column('project') . ":" . $build->get_column('jobset') . ":" . $build->get_column('job');
+    my $jobset = $build->jobset;
+    return $jobset->get_column('project') . ":" . $jobset->get_column('name') . ":" . $build->get_column('job');
 }
 
 
@@ -414,6 +413,7 @@ sub approxTableSize {
 
 sub requireLocalStore {
     my ($c) = @_;
+    require Hydra::Helper::Nix;
     notFound($c, "Nix channels are not supported by this Hydra server.") if !Hydra::Helper::Nix::isLocalStore();
 }
 
