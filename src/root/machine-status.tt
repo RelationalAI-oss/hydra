@@ -15,6 +15,7 @@
   </thead>
   [% FOREACH m IN machines %]
     [% name = m.key ? stripSSHUser(m.key) : "localhost" %]
+    [% IF !m.value.disabled %]
     <thead>
       <tr>
         <th colspan="6">
@@ -52,6 +53,7 @@
         <tr><td colspan="6">Idle</td></tr>
       [% END %]
     </tbody>
+    [% END %]
   [% END %]
 </table>
 
