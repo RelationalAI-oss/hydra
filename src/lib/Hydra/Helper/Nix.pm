@@ -17,6 +17,7 @@ use UUID4::Tiny qw(is_uuid4_string);
 our @ISA = qw(Exporter);
 our @EXPORT = qw(
     cancelBuilds
+    cancelBuildsForJobset
     constructRunCommandLogPath
     findLog
     gcRootFor
@@ -487,6 +488,15 @@ sub cancelBuilds {
     });
 }
 
+
+sub cancelBuildsForJobset {
+    my ($db, $jobset_id) = @_;
+    my $builds = $db->resultset('Builds')->search_rs(
+        { id => { -in => \ "select id from Builds where id in ((select id from Builds where jobset_id = $jobset_id and finished = 0) except (select build from JobsetEvalMembers where eval in (select max(id) from JobsetEvals where hasNewBuilds = 1 and jobset_id = $jobset_id group by jobset_id)))"
+        });
+    my $n = cancelBuilds($db, $builds);
+    return $n;
+}
 
 sub restartBuilds {
     my ($db, $builds) = @_;

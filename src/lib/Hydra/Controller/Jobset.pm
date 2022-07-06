@@ -254,7 +254,7 @@ sub updateJobset {
     }
 
     my $enabled = int($c->stash->{params}->{enabled});
-    die if $enabled < 0 || $enabled > 3;
+    die if $enabled < 0 || $enabled > 9;
 
     my $shares = int($c->stash->{params}->{schedulingshares} // 1);
     error($c, "The number of scheduling shares must be positive.") if $shares <= 0;
@@ -371,10 +371,8 @@ sub cancel_non_current : Chained('jobsetChain') PathPart('cancel-non-current') A
     requireCancelBuildPrivileges($c, $c->stash->{project});
 
     my $jobset_id = $c->stash->{jobset}->id;
-    my $builds = $c->model('DB::Builds')->search_rs(
-        { id => { -in => \ "select id from Builds where id in ((select id from Builds where jobset_id = $jobset_id and finished = 0) except (select build from JobsetEvalMembers where eval in (select max(id) from JobsetEvals where hasNewBuilds = 1 and jobset_id = $jobset_id group by jobset_id)))" }
-        });
-    my $n = cancelBuilds($c->model('DB')->schema, $builds);
+    my $n = cancelBuildsForJobset($c->model('DB')->schema, $jobset_id);
+
     $c->flash->{successMsg} = "$n builds have been cancelled.";
     $c->res->redirect($c->request->referer // "/");
 }

@@ -71,6 +71,9 @@
       <label class="btn btn-secondary[% IF jobset.enabled == 3 %] active[% END %]">
         <input type="radio" name="enabled" value="3" [% IF jobset.enabled == 3 %]checked[% END %]>One-at-a-time</button>
       </label>
+      <label class="btn btn-secondary[% IF jobset.enabled == 9 %] active[% END %]">
+        <input type="radio" name="enabled" value="9" [% IF jobset.enabled == 9 %]checked[% END %]>Only build latest evaluation (cancel non-current builds)</button>
+      </label>
       <label class="btn btn-secondary[% IF jobset.enabled == 0 %] active[% END %]">
         <input type="radio" name="enabled" value="0" [% IF jobset.enabled == 0 %]checked[% END %]>Disabled</button>
       </label>

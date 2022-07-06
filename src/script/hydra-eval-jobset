@@ -847,6 +847,9 @@ sub checkJobsetWrapped {
         $jobset->update({ enabled => 0 }) if $jobset->enabled == 2;
 
         $jobset->update({ lastcheckedtime => time, forceeval => undef });
+
+        # IF this a jobset that only builds latest eval, cancel all non-current builds for jobset
+        cancelBuildsForJobset($db, $jobset->id) if $jobset->enabled == 9;
     });
 
     my $dbStop = clock_gettime(CLOCK_MONOTONIC);
