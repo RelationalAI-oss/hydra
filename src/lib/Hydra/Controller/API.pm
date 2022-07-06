@@ -253,7 +253,7 @@ sub push : Chained('api') PathPart('push') Args(0) {
     my @repos = split /,/, ($c->request->query_params->{repos} // "");
     foreach my $r (@repos) {
         triggerJobset($self, $c, $_, $force) foreach $c->model('DB::Jobsets')->search(
-            { 'project.enabled' => 1, 'me.enabled' => 1 },
+            { 'project.enabled' => 1, 'me.enabled' => { '!=' => 0 } },
             {
                 join => 'project',
                 where => \ [ 'exists (select 1 from JobsetInputAlts where project = me.project and jobset = me.name and value = ?)', [ 'value', $r ] ],
