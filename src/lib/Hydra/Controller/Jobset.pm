@@ -365,4 +365,19 @@ sub latest_eval : Chained('jobsetChain') PathPart('latest-eval') {
 }
 
 
+sub cancel_non_current : Chained('jobsetChain') PathPart('cancel-non-current') Args(0) {
+    my ($self, $c) = @_;
+
+    requireCancelBuildPrivileges($c, $c->stash->{project});
+
+    my $jobset_id = $c->stash->{jobset}->id;
+    my $builds = $c->model('DB::Builds')->search_rs(
+        { id => { -in => \ "select id from Builds b1 where b1.jobset_id = $jobset_id and id in ((select id from Builds where finished = 0) except (select build from JobsetEvalMembers where eval in (select max(id) from JobsetEvals where hasNewBuilds = 1 and jobset_id = $jobset_id group by jobset_id)))" }
+        });
+    my $n = cancelBuilds($c->model('DB')->schema, $builds);
+    $c->flash->{successMsg} = "$n builds have been cancelled.";
+    $c->res->redirect($c->request->referer // "/");
+}
+
+
 1;
