@@ -149,6 +149,9 @@ struct Evaluator
                 case 3:
                     jobset.evaluation_style = EvaluationStyle::ONE_AT_A_TIME;
                     break;
+                case 9:
+                    jobset.evaluation_style = EvaluationStyle::SCHEDULE;
+                    break;
             }
 
             seen.insert(name);
