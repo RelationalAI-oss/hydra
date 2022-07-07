@@ -371,7 +371,7 @@ sub cancel_non_current : Chained('jobsetChain') PathPart('cancel-non-current') A
     requireCancelBuildPrivileges($c, $c->stash->{project});
 
     my $jobset_id = $c->stash->{jobset}->id;
-    my $n = cancelBuildsForJobset($c->model('DB')->schema, $jobset_id);
+    my $n = cancelNonCurrentBuildsForJobset($c->model('DB')->schema, $jobset_id);
 
     $c->flash->{successMsg} = "$n builds have been cancelled.";
     $c->res->redirect($c->request->referer // "/");
