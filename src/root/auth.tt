@@ -1,9 +1,5 @@
 [% IF c.user_exists  %]
 
-  [% IF c.user.type == 'google' %]
-    <script src="https://apis.google.com/js/platform.js" async="1" defer="1"></script>
-  [% END %]
-
   <script>
     function finishSignOut() {
       $.post("[% c.uri_for('/logout') %]")
@@ -91,7 +87,7 @@
         return false;
         };
 
-      $("#google-signin").click(function() {
+      $("#g_id_signin").click(function() {
         $(".g-signin2:first-child > div").click();
       });
     </script>

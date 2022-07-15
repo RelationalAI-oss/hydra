@@ -133,8 +133,17 @@
   [% ELSE %]
     [% WRAPPER makeSubMenu title="Sign in" id="sign-in-menu" align="right" %]
       [% IF c.config.enable_google_login %]
-        <div style="display: none" class="g-signin2" data-onsuccess="onGoogleSignIn" data-theme="dark"></div>
-        <a class="dropdown-item" href="#" id="google-signin">Sign in with Google</a>
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+        <div id="g_id_onload" data-client_id="[% c.config.google_client_id %]" data-callback="onGoogleSignIn">
+        </div>
+        <div class="g_id_signin dropdown-item"
+             data-type="standard"
+             data-shape="square"
+             data-theme="outline"
+             data-text="signin_with"
+             data-size="large"
+             data-logo_alignment="left">Sign in with Google
+        </div>
         <div class="dropdown-divider"></div>
       [% END %]
       [% IF c.config.github_client_id %]
