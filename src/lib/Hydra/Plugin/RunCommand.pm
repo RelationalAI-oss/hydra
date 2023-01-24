@@ -137,8 +137,8 @@ sub makeJsonPayload {
     return $json;
 }
 
-sub buildFinished {
-    my ($self, $build, $dependents) = @_;
+sub _buildFinished {
+    my ($self, $build) = @_;
     my $event = "buildFinished";
 
     my $commandsToRun = fanoutToCommands(
@@ -195,6 +195,13 @@ sub buildFinished {
         } finally {
             umask($oldUmask);
         };
+    }
+}
+
+sub buildFinished {
+    my ($self, $topbuild, $dependents) = @_;
+    foreach my $build ($topbuild, @{$dependents}) {
+        _buildFinished($self, $build)
     }
 }
 
