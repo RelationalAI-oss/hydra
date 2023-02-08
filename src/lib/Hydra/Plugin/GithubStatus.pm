@@ -39,6 +39,10 @@ sub common {
 
         foreach my $conf (@config) {
             next unless $jobName =~ /^$conf->{jobs}$/;
+
+            my $excludedJobs = $conf->{excluded_jobs} // "";
+            next if $jobName =~ /^$excludedJobs$/ ;
+
             # Don't send out "pending" status updates if the build is already finished
             next if !$finished && $build->finished == 1;
 
