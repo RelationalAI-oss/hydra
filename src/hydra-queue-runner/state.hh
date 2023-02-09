@@ -303,7 +303,7 @@ private:
     std::unique_ptr<HydraConfig> config;
 
     // FIXME: Make configurable.
-    const unsigned int maxTries = 5;
+    const unsigned int maxTries = 7;
     const unsigned int retryInterval = 60; // seconds
     const float retryBackoff = 3.0;
     const unsigned int maxParallelCopyClosure = 4;
