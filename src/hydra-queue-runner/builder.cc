@@ -61,7 +61,7 @@ void State::builder(MachineReservation::ptr reservation)
             step_->tries++;
             nrRetries++;
             if (step_->tries > maxNrRetries) maxNrRetries = step_->tries; // yeah yeah, not atomic
-            int delta = retryInterval * std::pow(retryBackoff, step_->tries - 1) + (rand() % 10);
+            int delta = 60 + (retryInterval * std::min(240.0, std::pow(retryBackoff, step_->tries - 1)) + (rand() % 10));
             printMsg(lvlInfo, "will retry ‘%s’ after %ss", localStore->printStorePath(step->drvPath), delta);
             step_->after = std::chrono::system_clock::now() + std::chrono::seconds(delta);
         }
