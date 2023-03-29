@@ -102,6 +102,26 @@ in the hydra configuration file, as below:
 </hydra_notify>
 ```
 
+hydra-queue-runner's Prometheus service
+---------------------------------------
+
+hydra-queue-runner supports running a Prometheus webserver for metrics. The
+exporter's address defaults to exposing on `127.0.0.1:9198`, but is also
+configurable through the hydra configuration file and a command line argument,
+as below. A port of `:0` will make the exposer choose a random, available port.
+
+```conf
+queue_runner_metrics_address = 127.0.0.1:9198
+# or
+queue_runner_metrics_address = [::]:9198
+```
+
+```shell
+$ hydra-queue-runner --prometheus-address 127.0.0.1:9198
+# or
+$ hydra-queue-runner --prometheus-address [::]:9198
+```
+
 Using LDAP as authentication backend (optional)
 -----------------------------------------------
 
@@ -111,8 +131,8 @@ use LDAP to manage roles and users.
 This is configured by defining the `<ldap>` block in the configuration file.
 In this block it's possible to configure the authentication plugin in the
 `<config>` block. All options are directly passed to `Catalyst::Authentication::Store::LDAP`.
-The documentation for the available settings can be found [here]
-(https://metacpan.org/pod/Catalyst::Authentication::Store::LDAP#CONFIGURATION-OPTIONS).
+The documentation for the available settings can be found
+[here](https://metacpan.org/pod/Catalyst::Authentication::Store::LDAP#CONFIGURATION-OPTIONS).
 
 Note that the bind password (if needed) should be supplied as an included file to
 prevent it from leaking to the Nix store.
@@ -159,13 +179,14 @@ Example configuration:
       <role_search_options>
         deref = always
       </role_search_options>
+    </store>
   </config>
   <role_mapping>
     # Make all users in the hydra_admin group Hydra admins
     hydra_admin = admin
     # Allow all users in the dev group to restart jobs and cancel builds
     dev = restart-jobs
-    dev = cancel-builds
+    dev = cancel-build
   </role_mapping>
 </ldap>
 ```
