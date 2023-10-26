@@ -51,17 +51,21 @@ sub new {
     $ENV{'HYDRA_CONFIG'} = "$dir/hydra.conf";
 
     my $hydra_config = $opts{'hydra_config'} || "";
+    $hydra_config = "queue_runner_metrics_address = 127.0.0.1:0\n" . $hydra_config;
     if ($opts{'use_external_destination_store'} // 1) {
-        $hydra_config = "store_uri = file:$dir/nix/dest-store\n" . $hydra_config;
+        $hydra_config = "store_uri = file://$dir/nix/dest-store\n" . $hydra_config;
     }
 
     write_file($ENV{'HYDRA_CONFIG'}, $hydra_config);
 
-    $ENV{'NIX_LOG_DIR'} = "$dir/nix/var/log/nix";
+    my $nix_store_dir = "$dir/nix/store";
+    my $nix_state_dir = "$dir/nix/var/nix";
+    my $nix_log_dir = "$dir/nix/var/log/nix";
+
     $ENV{'NIX_REMOTE_SYSTEMS'} = '';
-    $ENV{'NIX_REMOTE'} = '';
-    $ENV{'NIX_STATE_DIR'} = "$dir/nix/var/nix";
-    $ENV{'NIX_STORE_DIR'} = "$dir/nix/store";
+    $ENV{'NIX_REMOTE'} = "local?store=$nix_store_dir&state=$nix_state_dir&log=$nix_log_dir";
+    $ENV{'NIX_STATE_DIR'} = $nix_state_dir; # FIXME: remove
+    $ENV{'NIX_STORE_DIR'} = $nix_store_dir; # FIXME: remove
 
     my $pgsql = Test::PostgreSQL->new(
         extra_initdb_args => "--locale C.UTF-8"
@@ -72,7 +76,8 @@ sub new {
         _db => undef,
         db_handle => $pgsql,
         tmpdir => $dir,
-        nix_state_dir => "$dir/nix/var/nix",
+        nix_state_dir => $nix_state_dir,
+        nix_log_dir => $nix_log_dir,
         testdir => abs_path(dirname(__FILE__) . "/.."),
         jobsdir => abs_path(dirname(__FILE__) . "/../jobs")
     }, $class;
@@ -145,10 +150,47 @@ sub nix_state_dir {
 sub makeAndEvaluateJobset {
     my ($self, %opts) = @_;
 
-    my $expression = $opts{'expression'} || die "Mandatory 'expression' option not passed to makeAndEValuateJobset.";
-    my $should_build = $opts{'build'} // 0;
+    my $expression = $opts{'expression'} || die "Mandatory 'expression' option not passed to makeAndEvaluateJobset.\n";
     my $jobsdir = $opts{'jobsdir'} // $self->jobsdir;
+    my $should_build = $opts{'build'} // 0;
 
+    my $jobsetCtx = $self->makeJobset(
+        expression => $expression,
+        jobsdir => $jobsdir,
+    );
+    my $jobset = $jobsetCtx->{"jobset"};
+
+    evalSucceeds($jobset) or die "Evaluating jobs/$expression should exit with return code 0.\n";
+
+    my $builds = {};
+
+    for my $build ($jobset->builds) {
+        if ($should_build) {
+            runBuild($build) or die "Build '".$build->job."' from jobs/$expression should exit with return code 0.\n";
+            $build->discard_changes();
+        }
+
+        $builds->{$build->job} = $build;
+    }
+
+    return $builds;
+}
+
+# Create a jobset.
+#
+# In return, you get a hash of the user, project, and jobset records.
+#
+# This always uses an `expression` from the `jobsdir` directory.
+#
+# Hash Parameters:
+#
+#  * expression: The file in the jobsdir directory to evaluate
+#  * jobsdir: An alternative jobsdir to source the expression from
+sub makeJobset {
+    my ($self, %opts) = @_;
+
+    my $expression = $opts{'expression'} || die "Mandatory 'expression' option not passed to makeJobset.\n";
+    my $jobsdir = $opts{'jobsdir'} // $self->jobsdir;
 
     # Create a new user for this test
     my $user = $self->db()->resultset('Users')->create({
@@ -174,22 +216,12 @@ sub makeAndEvaluateJobset {
     my $jobsetinput = $jobset->jobsetinputs->create({name => "jobs", type => "path"});
     $jobsetinput->jobsetinputalts->create({altnr => 0, value => $jobsdir});
 
-    evalSucceeds($jobset) or die "Evaluating jobs/$expression should exit with return code 0";
-
-    my $builds = {};
-
-    for my $build ($jobset->builds) {
-        if ($should_build) {
-            runBuild($build) or die "Build '".$build->job."' from jobs/$expression should exit with return code 0";
-            $build->discard_changes();
-        }
-
-        $builds->{$build->job} = $build;
-    }
-
-    return $builds;
+    return {
+        user => $user,
+        project => $project,
+        jobset => $jobset,
+    };
 }
-
 
 sub DESTROY
 {
@@ -200,7 +232,7 @@ sub DESTROY
 
 sub write_file {
     my ($path, $text) = @_;
-    open(my $fh, '>', $path) or die "Could not open file '$path' $!";
+    open(my $fh, '>', $path) or die "Could not open file '$path' $!\n.";
     print $fh $text || "";
     close $fh;
 }
