@@ -514,14 +514,19 @@ sub log :Local :Args(1) {
 
     die if defined $tail && $tail !~ /^[0-9]+$/;
 
+    my $logPrefix = $c->config->{log_prefix};
+
+    if (defined $logPrefix) {
+        $c->res->redirect($logPrefix . "log/" . basename($drvPath));
+        return;
+    }
+
     my $logFile = findLog($c, $drvPath);
 
     if (defined $logFile) {
         serveLogFile($c, $logFile, $tail);
         return;
     }
-
-    my $logPrefix = $c->config->{log_prefix};
 
     if (defined $logPrefix) {
         $c->res->redirect($logPrefix . "log/" . basename($drvPath));
