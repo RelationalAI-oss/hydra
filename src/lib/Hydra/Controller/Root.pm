@@ -516,7 +516,7 @@ sub log :Local :Args(1) {
 
     my $logPrefix = $c->config->{log_prefix};
 
-    if (defined $logPrefix) {
+    if (defined $logPrefix && ! defined $tail) {
         $c->res->redirect($logPrefix . "log/" . basename($drvPath));
         return;
     }
