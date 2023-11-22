@@ -514,9 +514,11 @@ sub log :Local :Args(1) {
 
     die if defined $tail && $tail !~ /^[0-9]+$/;
 
+    my $ongoing = $c->model('DB::BuildSteps')->search({ drvpath => $drvPath, busy => { '!=' => 0 } }, {})->count != 0;
+
     my $logPrefix = $c->config->{log_prefix};
 
-    if (defined $logPrefix && ! defined $tail) {
+    if (defined $logPrefix && ! defined $tail && ! $ongoing) {
         $c->res->redirect($logPrefix . "log/" . basename($drvPath));
         return;
     }
