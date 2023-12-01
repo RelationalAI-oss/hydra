@@ -5,10 +5,13 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#include "build-result.hh"
+#include "path.hh"
 #include "serve-protocol.hh"
 #include "state.hh"
 #include "util.hh"
 #include "worker-protocol.hh"
+#include "worker-protocol-impl.hh"
 #include "finally.hh"
 #include "url.hh"
 
@@ -49,13 +52,35 @@ static Strings extraStoreArgs(std::string & machine)
 
 static void openConnection(Machine::ptr machine, Path tmpDir, int stderrFD, Child & child)
 {
-    string pgmName;
+    std::string pgmName;
     Pipe to, from;
     to.create();
     from.create();
 
-    child.pid = startProcess([&]() {
+    Strings argv;
+    if (machine->isLocalhost()) {
+        pgmName = "nix-store";
+        argv = {"nix-store", "--builders", "", "--serve", "--write"};
+    } else {
+        pgmName = "ssh";
+        auto sshName = machine->sshName;
+        Strings extraArgs = extraStoreArgs(sshName);
+        argv = {"ssh", sshName};
+        if (machine->sshKey != "") append(argv, {"-i", machine->sshKey});
+        if (machine->sshPublicHostKey != "") {
+            Path fileName = tmpDir + "/host-key";
+            auto p = machine->sshName.find("@");
+            std::string host = p != std::string::npos ? std::string(machine->sshName, p + 1) : machine->sshName;
+            writeFile(fileName, host + " " + machine->sshPublicHostKey + "\n");
+            append(argv, {"-oUserKnownHostsFile=" + fileName});
+        }
+        append(argv,
+            { "-x", "-a", "-oBatchMode=yes", "-oConnectTimeout=60", "-oTCPKeepAlive=yes"
+            , "--", "nix-store", "--serve", "--write" });
+        append(argv, extraArgs);
+    }
 
+    child.pid = startProcess([&]() {
         restoreProcessContext();
 
         if (dup2(to.readSide.get(), STDIN_FILENO) == -1)
@@ -66,30 +91,6 @@ static void openConnection(Machine::ptr machine, Path tmpDir, int stderrFD, Chil
 
         if (dup2(stderrFD, STDERR_FILENO) == -1)
             throw SysError("cannot dup stderr");
-
-        Strings argv;
-        if (machine->isLocalhost()) {
-            pgmName = "nix-store";
-            argv = {"nix-store", "--builders", "", "--serve", "--write"};
-        }
-        else {
-            pgmName = "ssh";
-            auto sshName = machine->sshName;
-            Strings extraArgs = extraStoreArgs(sshName);
-            argv = {"ssh", sshName};
-            if (machine->sshKey != "") append(argv, {"-i", machine->sshKey});
-            if (machine->sshPublicHostKey != "") {
-                Path fileName = tmpDir + "/host-key";
-                auto p = machine->sshName.find("@");
-                string host = p != string::npos ? string(machine->sshName, p + 1) : machine->sshName;
-                writeFile(fileName, host + " " + machine->sshPublicHostKey + "\n");
-                append(argv, {"-oUserKnownHostsFile=" + fileName});
-            }
-            append(argv,
-                { "-x", "-a", "-oBatchMode=yes", "-oConnectTimeout=60", "-oTCPKeepAlive=yes"
-                , "--", "nix-store", "--serve", "--write" });
-            append(argv, extraArgs);
-        }
 
         execvp(argv.front().c_str(), (char * *) stringsToCharPtrs(argv).data()); // FIXME: remove cast
 
@@ -104,29 +105,31 @@ static void openConnection(Machine::ptr machine, Path tmpDir, int stderrFD, Chil
 }
 
 
-static void copyClosureTo(std::timed_mutex & sendMutex, ref<Store> destStore,
+static void copyClosureTo(std::timed_mutex & sendMutex, Store & destStore,
     FdSource & from, FdSink & to, const StorePathSet & paths,
     bool useSubstitutes = false)
 {
     StorePathSet closure;
-    destStore->computeFSClosure(paths, closure);
+    destStore.computeFSClosure(paths, closure);
 
+    WorkerProto::WriteConn wconn { .to = to };
+    WorkerProto::ReadConn rconn { .from = from };
     /* Send the "query valid paths" command with the "lock" option
        enabled. This prevents a race where the remote host
        garbage-collect paths that are already there. Optionally, ask
        the remote host to substitute missing paths. */
     // FIXME: substitute output pollutes our build log
-    to << cmdQueryValidPaths << 1 << useSubstitutes;
-    worker_proto::write(*destStore, to, closure);
+    to << ServeProto::Command::QueryValidPaths << 1 << useSubstitutes;
+    WorkerProto::write(destStore, wconn, closure);
     to.flush();
 
     /* Get back the set of paths that are already valid on the remote
        host. */
-    auto present = worker_proto::read(*destStore, from, Phantom<StorePathSet> {});
+    auto present = WorkerProto::Serialise<StorePathSet>::read(destStore, rconn);
 
     if (present.size() == closure.size()) return;
 
-    auto sorted = destStore->topoSortPaths(closure);
+    auto sorted = destStore.topoSortPaths(closure);
 
     StorePathSet missing;
     for (auto i = sorted.rbegin(); i != sorted.rend(); ++i)
@@ -137,8 +140,8 @@ static void copyClosureTo(std::timed_mutex & sendMutex, ref<Store> destStore,
     std::unique_lock<std::timed_mutex> sendLock(sendMutex,
         std::chrono::seconds(600));
 
-    to << cmdImportPaths;
-    destStore->exportPaths(missing, to);
+    to << ServeProto::Command::ImportPaths;
+    destStore.exportPaths(missing, to);
     to.flush();
 
     if (readInt(from) != 1)
@@ -185,8 +188,8 @@ void State::buildRemote(ref<Store> destStore,
 {
     assert(BuildResult::TimedOut == 8);
 
-    string base(step->drvPath.to_string());
-    result.logFile = logDir + "/" + string(base, 0, 2) + "/" + string(base, 2);
+    std::string base(step->drvPath.to_string());
+    result.logFile = logDir + "/" + std::string(base, 0, 2) + "/" + std::string(base, 2);
     AutoDelete autoDelete(result.logFile, false);
 
     createDirs(dirOf(result.logFile));
@@ -224,7 +227,9 @@ void State::buildRemote(ref<Store> destStore,
         });
 
         FdSource from(child.from.get());
+        WorkerProto::ReadConn rconn { .from = from };
         FdSink to(child.to.get());
+        WorkerProto::WriteConn wconn { .to = to };
 
         Finally updateStats([&]() {
             bytesReceived += from.read;
@@ -235,7 +240,7 @@ void State::buildRemote(ref<Store> destStore,
         unsigned int remoteVersion;
 
         try {
-            to << SERVE_MAGIC_1 << 0x204;
+            to << SERVE_MAGIC_1 << 0x206;
             to.flush();
 
             unsigned int magic = readInt(from);
@@ -249,7 +254,7 @@ void State::buildRemote(ref<Store> destStore,
 
         } catch (EndOfFile & e) {
             child.pid.wait();
-            string s = chomp(readFile(result.logFile));
+            std::string s = chomp(readFile(result.logFile));
             throw Error("cannot connect to ‘%1%’: %2%", machine->sshName, s);
         }
 
@@ -287,9 +292,9 @@ void State::buildRemote(ref<Store> destStore,
            this will copy the inputs to the binary cache from the local
            store. */
         if (localStore != std::shared_ptr<Store>(destStore)) {
-            StorePathSet closure;
-            localStore->computeFSClosure(step->drv->inputSrcs, closure);
-            copyPaths(*localStore, *destStore, closure, NoRepair, NoCheckSigs, NoSubstitute);
+            copyClosure(*localStore, *destStore,
+                step->drv->inputSrcs,
+                NoRepair, NoCheckSigs, NoSubstitute);
         }
 
         {
@@ -308,7 +313,7 @@ void State::buildRemote(ref<Store> destStore,
                 destStore->computeFSClosure(inputs, closure);
                 copyPaths(*destStore, *localStore, closure, NoRepair, NoCheckSigs, NoSubstitute);
             } else {
-                copyClosureTo(machine->state->sendLock, destStore, from, to, inputs, true);
+                copyClosureTo(machine->state->sendLock, *destStore, from, to, inputs, true);
             }
 
             auto now2 = std::chrono::steady_clock::now();
@@ -335,7 +340,7 @@ void State::buildRemote(ref<Store> destStore,
 
         updateStep(ssBuilding);
 
-        to << cmdBuildDerivation << localStore->printStorePath(step->drvPath);
+        to << ServeProto::Command::BuildDerivation << localStore->printStorePath(step->drvPath);
         writeDerivation(to, *localStore, basicDrv);
         to << maxSilentTime << buildTimeout;
         if (GET_PROTOCOL_MINOR(remoteVersion) >= 2)
@@ -368,7 +373,7 @@ void State::buildRemote(ref<Store> destStore,
             }
         }
         if (GET_PROTOCOL_MINOR(remoteVersion) >= 6) {
-            worker_proto::read(*localStore, from, Phantom<DrvOutputs> {});
+            WorkerProto::Serialise<DrvOutputs>::read(*localStore, rconn);
         }
         switch ((BuildResult::Status) res) {
             case BuildResult::Built:
@@ -444,18 +449,18 @@ void State::buildRemote(ref<Store> destStore,
             /* Get info about each output path. */
             std::map<StorePath, ValidPathInfo> infos;
             size_t totalNarSize = 0;
-            to << cmdQueryPathInfos;
-            worker_proto::write(*localStore, to, outputs);
+            to << ServeProto::Command::QueryPathInfos;
+            WorkerProto::write(*localStore, wconn, outputs);
             to.flush();
             while (true) {
                 auto storePathS = readString(from);
                 if (storePathS == "") break;
                 auto deriver = readString(from); // deriver
-                auto references = worker_proto::read(*localStore, from, Phantom<StorePathSet> {});
+                auto references = WorkerProto::Serialise<StorePathSet>::read(*localStore, rconn);
                 readLongLong(from); // download size
                 auto narSize = readLongLong(from);
                 auto narHash = Hash::parseAny(readString(from), htSHA256);
-                auto ca = parseContentAddressOpt(readString(from));
+                auto ca = ContentAddress::parseOpt(readString(from));
                 readStrings<StringSet>(from); // sigs
                 ValidPathInfo info(localStore->parseStorePath(storePathS), narHash);
                 assert(outputs.count(info.path));
@@ -495,7 +500,7 @@ void State::buildRemote(ref<Store> destStore,
                        lambda function only gets executed if someone tries to read
                        from source2, we will send the command from here rather
                        than outside the lambda. */
-                    to << cmdDumpStorePath << localStore->printStorePath(path);
+                    to << ServeProto::Command::DumpStorePath << localStore->printStorePath(path);
                     to.flush();
 
                     TeeSource tee(from, sink);
