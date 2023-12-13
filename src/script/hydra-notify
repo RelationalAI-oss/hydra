@@ -129,6 +129,7 @@ while (!$queued_only) {
         my $channelName = $message->{"channel"};
         my $pid = $message->{"pid"};
         my $payload = $message->{"payload"};
+        print STDERR "Received: $channelName = [$payload]\n";
 
         $prom->inc("notify_event", { channel => $channelName });
 
