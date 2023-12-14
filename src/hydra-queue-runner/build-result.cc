@@ -1,7 +1,7 @@
 #include "hydra-build-result.hh"
 #include "store-api.hh"
 #include "util.hh"
-#include "fs-accessor.hh"
+#include "source-accessor.hh"
 
 #include <regex>
 
@@ -63,7 +63,7 @@ BuildOutput getBuildOutput(
 
         auto productsFile = narMembers.find(outputS + "/nix-support/hydra-build-products");
         if (productsFile == narMembers.end() ||
-            productsFile->second.type != FSAccessor::Type::tRegular)
+            productsFile->second.type != SourceAccessor::Type::tRegular)
             continue;
         assert(productsFile->second.contents);
 
@@ -93,7 +93,8 @@ BuildOutput getBuildOutput(
             if (file == narMembers.end()) continue;
 
             product.name = product.path == store->printStorePath(output) ? "" : baseNameOf(product.path);
-            if (file->second.type == FSAccessor::Type::tRegular) {
+
+            if (file->second.type == SourceAccessor::Type::tRegular) {
                 product.isRegular = true;
                 product.fileSize = file->second.fileSize.value();
                 product.sha256hash = product.fileSize == 0 ? Hash::parseAny("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", htSHA256) : file->second.sha256.value();
@@ -116,7 +117,7 @@ BuildOutput getBuildOutput(
 
             auto file = narMembers.find(product.path);
             assert(file != narMembers.end());
-            if (file->second.type == FSAccessor::Type::tDirectory)
+            if (file->second.type == SourceAccessor::Type::tDirectory)
                 res.products.push_back(product);
         }
     }
@@ -125,7 +126,7 @@ BuildOutput getBuildOutput(
     for (auto & output : outputs) {
         auto file = narMembers.find(store->printStorePath(output) + "/nix-support/hydra-release-name");
         if (file == narMembers.end() ||
-            file->second.type != FSAccessor::Type::tRegular)
+            file->second.type != SourceAccessor::Type::tRegular)
             continue;
         res.releaseName = trim(file->second.contents.value());
         // FIXME: validate release name
@@ -135,7 +136,7 @@ BuildOutput getBuildOutput(
     for (auto & output : outputs) {
         auto file = narMembers.find(store->printStorePath(output) + "/nix-support/hydra-metrics");
         if (file == narMembers.end() ||
-            file->second.type != FSAccessor::Type::tRegular)
+            file->second.type != SourceAccessor::Type::tRegular)
             continue;
         for (auto & line : tokenizeString<Strings>(file->second.contents.value(), "\n")) {
             auto fields = tokenizeString<std::vector<std::string>>(line);
