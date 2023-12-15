@@ -195,5 +195,13 @@ sub all_builds : Chained('evalChain') PathPart('builds') Args(0) {
     );
 }
 
+sub finished : Chained('evalChain') PathPart('finished') Args(0) {
+    my ($self, $c) = @_;
+    my $notFinished = $c->stash->{eval}->builds->search({ finished => 0 })->count;
+    $self->status_ok(
+        $c,
+        entity => $notFinished == 0 ? 1 : 0,
+    );
+}
 
 1;
