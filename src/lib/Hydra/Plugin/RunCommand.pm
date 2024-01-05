@@ -279,8 +279,18 @@ sub _buildFinished {
 
 sub buildFinished {
     my ($self, $topbuild, $dependents) = @_;
+
+
+    # tracking builds we have triggered, as for failed jobs, original build can be in dependents
+    my @builds = ();
     foreach my $build ($topbuild, @{$dependents}) {
-        _buildFinished($self, $build)
+        my $id = $build->id;
+        if (grep(/^$id/, @builds)) {
+            print STDERR "Skipped $id, already triggered.\n";
+        } else {
+            _buildFinished($self, $build);
+            push(@builds, $id);
+        }
     }
 }
 
