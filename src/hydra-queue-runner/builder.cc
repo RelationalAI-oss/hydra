@@ -172,7 +172,10 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
                     store->upsertFile("log/" + std::string(step->drvPath.to_string()), readFile(result.logFile), "text/plain; charset=utf-8");
                     unlink(result.logFile.c_str());
                 }
-            } catch (...) {
+            } catch (std::exception & e) {
+                try {
+                    printMsg(lvlInfo, "error (ignored): %1%", e.what());
+                } catch (...) { }
                 ignoreException();
             }
         }
