@@ -7,7 +7,7 @@ use HTTP::Request;
 use JSON::MaybeXS;
 use LWP::UserAgent;
 use Hydra::Helper::CatalystUtils;
-use List::Util qw(max);
+use List::Util qw(max min);
 
 sub isEnabled {
     my ($self) = @_;
@@ -87,10 +87,11 @@ sub common {
                     my $now = time();
                     my $diff = $limitReset - $now;
                     my $delay = (($limit - $limitRemaining) / $diff) * 5;
+                    $delay = min($delay, $diff);
                     if ($limitRemaining < 1000) {
                       $delay = max(1, $delay);
                     }
-                    if ($limitRemaining < 2000) {
+                    if ($limitRemaining < 1500) {
                       print STDERR "GithubStatus ratelimit $limitRemaining/$limit, resets in $diff, sleeping $delay\n";
                       sleep $delay;
                     } else {
