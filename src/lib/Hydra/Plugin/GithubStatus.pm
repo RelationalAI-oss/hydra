@@ -126,11 +126,11 @@ sub common {
 }
 
 sub buildQueued {
-    common(@_, [], 0);
+    #common(@_, [], 0);
 }
 
 sub buildStarted {
-    common(@_, [], 0);
+    #common(@_, [], 0);
 }
 
 sub buildFinished {
