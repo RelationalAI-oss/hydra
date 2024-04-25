@@ -97,7 +97,7 @@ BuildOutput getBuildOutput(
             if (file->second.type == SourceAccessor::Type::tRegular) {
                 product.isRegular = true;
                 product.fileSize = file->second.fileSize.value();
-                product.sha256hash = product.fileSize == 0 ? Hash::parseAny("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", htSHA256) : file->second.sha256.value();
+                product.sha256hash = product.fileSize == 0 ? Hash::parseAny("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", HashAlgorithm::SHA256) : file->second.sha256.value();
             }
 
             res.products.push_back(product);
