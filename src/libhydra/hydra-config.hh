@@ -2,6 +2,7 @@
 
 #include <map>
 
+#include "file-system.hh"
 #include "util.hh"
 
 struct HydraConfig
@@ -17,7 +18,7 @@ struct HydraConfig
         if (hydraConfigFile && pathExists(*hydraConfigFile)) {
 
             for (auto line : tokenizeString<Strings>(readFile(*hydraConfigFile), "\n")) {
-                line = trim(string(line, 0, line.find('#')));
+                line = trim(std::string(line, 0, line.find('#')));
 
                 auto eq = line.find('=');
                 if (eq == std::string::npos) continue;

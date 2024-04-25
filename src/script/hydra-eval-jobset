@@ -85,14 +85,14 @@ sub attrsToSQL {
 # Fetch a store path from 'eval_substituter' if not already present.
 sub getPath {
     my ($path) = @_;
-    return 1 if isValidPath($path);
+    return 1 if $MACHINE_LOCAL_STORE->isValidPath($path);
 
     my $substituter = $config->{eval_substituter};
 
     system("nix", "--experimental-features", "nix-command", "copy", "--from", $substituter, "--", $path)
         if defined $substituter;
 
-    return isValidPath($path);
+    return $MACHINE_LOCAL_STORE->isValidPath($path);
 }
 
 
@@ -143,7 +143,7 @@ sub fetchInputBuild {
         , version => $version
         , outputName => $mainOutput->name
         };
-    if (isValidPath($prevBuild->drvpath)) {
+    if ($MACHINE_LOCAL_STORE->isValidPath($prevBuild->drvpath)) {
         $result->{drvPath} = $prevBuild->drvpath;
     }
 
@@ -233,7 +233,7 @@ sub fetchInputEval {
         my $out = $build->buildoutputs->find({ name => "out" });
         next unless defined $out;
         # FIXME: Should we fail if the path is not valid?
-        next unless isValidPath($out->path);
+        next unless $MACHINE_LOCAL_STORE->isValidPath($out->path);
         $jobs->{$build->get_column('job')} = $out->path;
     }
 
@@ -438,13 +438,17 @@ sub checkBuild {
         # new build to be scheduled if the meta.maintainers field is
         # changed?
         if (defined $prevEval) {
+            my $pathOrDrvConstraint = defined $firstOutputPath
+                ? { path => $firstOutputPath }
+                : { drvPath => $drvPath };
+
             my ($prevBuild) = $prevEval->builds->search(
                 # The "project" and "jobset" constraints are
                 # semantically unnecessary (because they're implied by
                 # the eval), but they give a factor 1000 speedup on
                 # the Nixpkgs jobset with PostgreSQL.
                 { jobset_id => $jobset->get_column('id'), job => $jobName,
-                  name => $firstOutputName, path => $firstOutputPath },
+                  name => $firstOutputName, %$pathOrDrvConstraint },
                 { rows => 1, columns => ['id', 'finished'], join => ['buildoutputs'] });
             if (defined $prevBuild) {
                 #print STDERR "    already scheduled/built as build ", $prevBuild->id, "\n";
@@ -619,7 +623,7 @@ sub checkJobsetWrapped {
             } else {
                 # Update the jobset with the spec's inputs, and the continue
                 # evaluating the .jobsets jobset.
-                updateDeclarativeJobset($db, $project, ".jobsets", $declSpec);
+                updateDeclarativeJobset($config, $db, $project, ".jobsets", $declSpec);
                 $jobset->discard_changes;
                 $inputInfo->{"declInput"} = [ $declInput ];
                 $inputInfo->{"projectName"} = [ fetchInput($plugins, $db, $project, $jobset, "projectName", "string", $project->name, 0) ];
@@ -640,8 +644,8 @@ sub checkJobsetWrapped {
     my $flakeRef = $jobset->flake;
     if (defined $flakeRef) {
         (my $res, my $json, my $stderr) = captureStdoutStderr(
-            600, "nix", "flake", "info", "--tarball-ttl", 0, "--json", "--", $flakeRef);
-        die "'nix flake info' returned " . ($res & 127 ? "signal $res" : "exit code " . ($res >> 8))
+            600, "nix", "flake", "metadata", "--refresh", "--json", "--", $flakeRef);
+        die "'nix flake metadata' returned " . ($res & 127 ? "signal $res" : "exit code " . ($res >> 8))
             . ":\n" . ($stderr ? decode("utf-8", $stderr) : "(no output)\n")
             if $res;
         $flakeRef = decode_json($json)->{'url'};
@@ -799,7 +803,13 @@ sub checkJobsetWrapped {
 
             foreach my $job (values %{$jobs}) {
                 next unless $job->{constituents};
-                my $x = $drvPathToId{$job->{drvPath}} or die;
+
+                if (defined $job->{error}) {
+                    die "aggregate job ‘$job->{jobName}’ failed with the error: $job->{error}\n";
+                }
+
+                my $x = $drvPathToId{$job->{drvPath}} or
+                    die "aggregate job ‘$job->{jobName}’ has no corresponding build record.\n";
                 foreach my $drvPath (@{$job->{constituents}}) {
                     my $constituent = $drvPathToId{$drvPath};
                     if (defined $constituent) {

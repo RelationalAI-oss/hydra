@@ -1,7 +1,7 @@
 #include <cmath>
 
 #include "state.hh"
-#include "build-result.hh"
+#include "hydra-build-result.hh"
 #include "finally.hh"
 #include "binary-cache-store.hh"
 
@@ -98,8 +98,13 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
        it). */
     BuildID buildId;
     std::optional<StorePath> buildDrvPath;
-    unsigned int maxSilentTime, buildTimeout;
-    unsigned int repeats = step->isDeterministic ? 1 : 0;
+    // Other fields set below
+    nix::ServeProto::BuildOptions buildOptions {
+        .maxLogSize = maxLogSize,
+        .nrRepeats = step->isDeterministic ? 1u : 0u,
+        .enforceDeterminism = step->isDeterministic,
+        .keepFailed = false,
+    };
 
     auto conn(dbPool.get());
 
@@ -134,18 +139,18 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
             {
                 auto i = jobsetRepeats.find(std::make_pair(build2->projectName, build2->jobsetName));
                 if (i != jobsetRepeats.end())
-                    repeats = std::max(repeats, i->second);
+                    buildOptions.nrRepeats = std::max(buildOptions.nrRepeats, i->second);
             }
         }
         if (!build) build = *dependents.begin();
 
         buildId = build->id;
         buildDrvPath = build->drvPath;
-        maxSilentTime = build->maxSilentTime;
-        buildTimeout = build->buildTimeout;
+        buildOptions.maxSilentTime = build->maxSilentTime;
+        buildOptions.buildTimeout = build->buildTimeout;
 
         printInfo("performing step ‘%s’ %d times on ‘%s’ (needed by build %d and %d others)",
-            localStore->printStorePath(step->drvPath), repeats + 1, machine->sshName, buildId, (dependents.size() - 1));
+            localStore->printStorePath(step->drvPath), buildOptions.nrRepeats + 1, machine->sshName, buildId, (dependents.size() - 1));
     }
 
     if (!buildOneDone)
@@ -209,7 +214,7 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
 
         try {
             /* FIXME: referring builds may have conflicting timeouts. */
-            buildRemote(destStore, machine, step, maxSilentTime, buildTimeout, repeats, result, activeStep, updateStep, narMembers);
+            buildRemote(destStore, machine, step, buildOptions, result, activeStep, updateStep, narMembers);
         } catch (Error & e) {
             if (activeStep->state_.lock()->cancelled) {
                 printInfo("marking step %d of build %d as cancelled", stepNr, buildId);
@@ -224,7 +229,7 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
 
         if (result.stepStatus == bsSuccess) {
             updateStep(ssPostProcessing);
-            res = getBuildOutput(destStore, narMembers, *step->drv);
+            res = getBuildOutput(destStore, narMembers, destStore->queryDerivationOutputMap(step->drvPath, &*localStore));
         }
     }
 
@@ -278,9 +283,12 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
 
         assert(stepNr);
 
-        for (auto & i : step->drv->outputsAndOptPaths(*localStore)) {
-            if (i.second.second)
-               addRoot(*i.second.second);
+        for (auto & [outputName, optOutputPath] : destStore->queryPartialDerivationOutputMap(step->drvPath, &*localStore)) {
+            if (!optOutputPath)
+                throw Error(
+                    "Missing output %s for derivation %d which was supposed to have succeeded",
+                    outputName, localStore->printStorePath(step->drvPath));
+            addRoot(*optOutputPath);
         }
 
         /* Register success in the database for all Build objects that
@@ -326,7 +334,7 @@ State::StepResult State::doBuildStep(nix::ref<Store> destStore,
                 pqxx::work txn(*conn);
 
                 for (auto & b : direct) {
-                    printMsg(lvlInfo, format("marking build %1% as succeeded") % b->id);
+                    printInfo("marking build %1% as succeeded", b->id);
                     markSucceededBuild(txn, b, res, buildId != b->id || result.isCached,
                         result.startTime, result.stopTime);
                 }
@@ -401,7 +409,7 @@ void State::failStep(
     Step::ptr step,
     BuildID buildId,
     const RemoteResult & result,
-    Machine::ptr machine,
+    ::Machine::ptr machine,
     bool & stepFinished)
 {
     /* Register failure in the database for all Build objects that
@@ -454,7 +462,7 @@ void State::failStep(
             /* Mark all builds that depend on this derivation as failed. */
             for (auto & build : indirect) {
                 if (build->finishedInDB) continue;
-                printMsg(lvlError, format("marking build %1% as failed") % build->id);
+                printError("marking build %1% as failed", build->id);
                 txn.exec_params0
                     ("update Builds set finished = 1, buildStatus = $2, startTime = $3, stopTime = $4, isCachedBuild = $5, notificationPendingSince = $4 where id = $1 and finished = 0",
                      build->id,
