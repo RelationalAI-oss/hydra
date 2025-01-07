@@ -18,10 +18,10 @@ sub toGithubState {
     my ($buildStatus) = @_;
     if ($buildStatus == 0) {
         return "success";
-    } elsif ($buildStatus == 3 || $buildStatus == 4 || $buildStatus == 8 || $buildStatus == 10 || $buildStatus == 11) {
-        return "error";
-    } else {
+    } elif ($buildStatus == 1 || $buildStatus == 6 || $buildStatus == 7) {
         return "failure";
+    } else {
+        return "error";
     }
 }
 
