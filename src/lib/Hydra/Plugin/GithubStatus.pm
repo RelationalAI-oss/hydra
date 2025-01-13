@@ -18,7 +18,7 @@ sub toGithubState {
     my ($buildStatus) = @_;
     if ($buildStatus == 0) {
         return "success";
-    } elif ($buildStatus == 1 || $buildStatus == 6 || $buildStatus == 7) {
+    } elsif ($buildStatus == 1 || $buildStatus == 6 || $buildStatus == 7) {
         return "failure";
     } else {
         return "error";
